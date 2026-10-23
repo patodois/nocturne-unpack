@@ -114,6 +114,14 @@ enum Command {
         #[arg(long, default_value = DEFAULT_GAME_DIR)]
         game: PathBuf,
     },
+    /// Check the provider's output against the bridge's conventions (feature `bridge`). Takes the
+    /// options of `rewrite_bridge::conformance::cli` (`--id`, `--filter`, `--kind`, `--limit`,
+    /// `--allow`, `-v`, `--strict`, `--compare-load`), plus `--game DIR` and `--no-textures`
+    #[cfg(feature = "bridge")]
+    CheckConformance {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true, num_args = 0..)]
+        args: Vec<String>,
+    },
     /// Diagnostics for the clips of a demon bundle
     Anim {
         bundle: String,
@@ -306,6 +314,21 @@ fn main() -> Result<()> {
             kind,
             textures,
         } => check_bridge(&game, only.as_deref(), &kind, textures)?,
+        #[cfg(feature = "bridge")]
+        Command::CheckConformance { args } => {
+            let (mut game, mut textures) = (PathBuf::from(DEFAULT_GAME_DIR), true);
+            let mut rest = Vec::new();
+            let mut it = args.into_iter();
+            while let Some(a) = it.next() {
+                match a.as_str() {
+                    "--game" => game = PathBuf::from(it.next().context("--game needs a folder")?),
+                    "--no-textures" => textures = false,
+                    _ => rest.push(a),
+                }
+            }
+            let provider = nocturne_unpack::bridge::Nocturne::open(&game)?.with_textures(textures);
+            std::process::exit(rewrite_bridge::conformance::cli::run(&provider, rest));
+        }
         Command::Probe {
             bundle,
             mesh,

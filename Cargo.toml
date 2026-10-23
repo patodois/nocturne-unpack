@@ -17,7 +17,7 @@ serde_json = { version = "1", features = ["preserve_order"] }
 texture2ddecoder = "0.1.2"
 png = "0.18.1"
 # Shared model types for crossovers with other game rewrites
-rewrite-bridge = { git = "https://github.com/patodois/rewrite-bridge", rev = "1b5820180efbd585916ab206e6bcbbcf33096e1e", optional = true }
+rewrite-bridge = { git = "https://github.com/patodois/rewrite-bridge", rev = "0c5d0b0e08fcff58166f2ed6ad3daf9bdc72c0a8", optional = true }
 
 # The peak memory report of check
 [target.'cfg(unix)'.dependencies]

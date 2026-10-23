@@ -436,7 +436,7 @@ dependencies = [
 [[package]]
 name = "rewrite-bridge"
 version = "0.1.0"
-source = "git+https://github.com/patodois/rewrite-bridge?rev=1b5820180efbd585916ab206e6bcbbcf33096e1e#1b5820180efbd585916ab206e6bcbbcf33096e1e"
+source = "git+https://github.com/patodois/rewrite-bridge?rev=0c5d0b0e08fcff58166f2ed6ad3daf9bdc72c0a8#0c5d0b0e08fcff58166f2ed6ad3daf9bdc72c0a8"
 
 [[package]]
 name = "rustc-hash"
