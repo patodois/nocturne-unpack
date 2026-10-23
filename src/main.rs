@@ -168,15 +168,21 @@ fn release_memory() {
     }
 }
 
+/// Peak resident set size in MB; 0 where getrusage is not available (Windows)
 fn rss_mb() -> f64 {
-    let mut ru: libc::rusage = unsafe { std::mem::zeroed() };
-    unsafe { libc::getrusage(libc::RUSAGE_SELF, &mut ru) };
-    // macOS reports bytes, Linux kilobytes
-    #[cfg(target_os = "macos")]
-    let bytes = ru.ru_maxrss as f64;
-    #[cfg(not(target_os = "macos"))]
-    let bytes = ru.ru_maxrss as f64 * 1024.0;
-    bytes / 1048576.0
+    #[cfg(unix)]
+    {
+        let mut ru: libc::rusage = unsafe { std::mem::zeroed() };
+        unsafe { libc::getrusage(libc::RUSAGE_SELF, &mut ru) };
+        // macOS reports bytes, Linux kilobytes
+        #[cfg(target_os = "macos")]
+        let bytes = ru.ru_maxrss as f64;
+        #[cfg(not(target_os = "macos"))]
+        let bytes = ru.ru_maxrss as f64 * 1024.0;
+        bytes / 1048576.0
+    }
+    #[cfg(not(unix))]
+    0.0
 }
 
 fn main() -> Result<()> {
