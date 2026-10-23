@@ -7,7 +7,7 @@
 //! numbers are fixed by Unity 2019: 0 position, 1 normal, 2 tangent, 3 colour, 4 and 5 the first
 //! two UV sets, 12 blend weights, 13 blend indices.
 
-use anyhow::{bail, ensure, Result};
+use anyhow::{anyhow, bail, ensure, Result};
 
 use crate::bundle::Bundle;
 use crate::unity::{ChannelInfo, Mesh};
@@ -137,6 +137,17 @@ impl Layout {
             offset += vertex_count * stride;
             offset = (offset + 15) & !15;
         }
+        // A record is `stride` bytes, so a channel that sticks out of it would read into the
+        // next vertex, or past the end of the stream for the last one
+        for (i, c) in channels.iter().enumerate().filter(|(_, c)| c.dimension > 0) {
+            let end = c.offset as usize + c.dimension as usize * format_size(c.format)?;
+            ensure!(
+                end <= streams[c.stream as usize].1,
+                "vertex channel {i} ends at byte {end} of a {} byte record of stream {}",
+                streams[c.stream as usize].1,
+                c.stream
+            );
+        }
         Ok(Layout {
             streams,
             channels,
@@ -239,7 +250,9 @@ pub fn decode_with(mesh: &Mesh, data: &[u8]) -> Result<MeshData> {
         let size = format_size(c.format)?;
         ensure!(c.dimension <= 4, "more than four bone influences");
         for v in 0..n {
-            let (rec, _) = layout.record(data, CH_BLEND_INDEX, v).unwrap();
+            let (rec, _) = layout
+                .record(data, CH_BLEND_INDEX, v)
+                .ok_or_else(|| anyhow!("blend index of vertex {v} lies outside the vertex data"))?;
             let mut j = [0u16; 4];
             for (k, slot) in j.iter_mut().enumerate().take(c.dimension as usize) {
                 let idx = component_int(&rec[k * size..], c.format);
@@ -291,7 +304,13 @@ pub fn decode_with(mesh: &Mesh, data: &[u8]) -> Result<MeshData> {
             } else {
                 u16::from_le_bytes(chunk.try_into().unwrap()) as u32
             };
-            let v = raw + sm.baseVertex;
+            let v = raw.checked_add(sm.baseVertex).ok_or_else(|| {
+                anyhow!(
+                    "mesh {:?}: index {raw} plus base vertex {} does not fit 32 bits",
+                    mesh.m_Name,
+                    sm.baseVertex
+                )
+            })?;
             ensure!(
                 (v as usize) < n,
                 "mesh {:?}: index {v} past {n} vertices",
@@ -428,6 +447,52 @@ mod tests {
         let (mut mesh, data) = synthetic_mesh();
         mesh.m_MeshCompression = 1;
         assert!(decode_with(&mesh, &data).is_err());
+    }
+
+    #[test]
+    fn a_channel_that_sticks_out_of_its_record_is_an_error() {
+        // The bone indices (2 x u32 = 8 bytes) at byte 12 of a 16 byte record end at 20: the last
+        // vertex would read past the data
+        let (mut mesh, data) = synthetic_mesh();
+        mesh.m_VertexData.m_Channels[CH_BLEND_INDEX].offset = 12;
+        let e = decode_with(&mesh, &data).unwrap_err().to_string();
+        assert!(e.contains("channel 13"), "{e}");
+        // Another channel as well, and the layout itself
+        let (mut mesh, data) = synthetic_mesh();
+        mesh.m_VertexData.m_Channels[CH_NORMAL].offset = 20;
+        assert!(decode_with(&mesh, &data).is_err());
+    }
+
+    #[test]
+    fn bone_indices_that_stick_out_of_the_last_record_are_an_error_not_a_panic() {
+        // One stream of 14 byte records: a position (12 bytes) and two u8 bone indices at byte
+        // 13, which end at 15. The bytes every earlier vertex reads are in range (and zero), so
+        // only the last vertex runs past the 42 bytes of data
+        let ch = |stream, offset, format, dimension| ChannelInfo {
+            stream,
+            offset,
+            format,
+            dimension,
+        };
+        let mut channels = vec![ch(0, 0, 0, 3)];
+        channels.resize(13, ch(0, 0, 0, 0));
+        channels.push(ch(0, 13, 6, 2));
+        let (mut mesh, _) = synthetic_mesh();
+        mesh.m_VertexData.m_Channels = channels;
+        mesh.m_IndexBuffer = [0u16, 1, 2].iter().flat_map(|i| i.to_le_bytes()).collect();
+        let e = decode_with(&mesh, &[0u8; 42]).unwrap_err().to_string();
+        assert!(e.contains("channel 13"), "{e}");
+    }
+
+    #[test]
+    fn index_plus_base_vertex_must_fit_32_bits() {
+        let (mut mesh, data) = synthetic_mesh();
+        mesh.m_SubMeshes[0].baseVertex = u32::MAX;
+        mesh.m_IndexBuffer = [2u16, 2, 2].iter().flat_map(|i| i.to_le_bytes()).collect();
+        // 2 + 0xFFFF_FFFF wraps to 1 in release builds, which is a valid vertex (and panics in
+        // debug builds)
+        let e = decode_with(&mesh, &data).unwrap_err().to_string();
+        assert!(e.contains("base vertex"), "{e}");
     }
 
     #[test]
