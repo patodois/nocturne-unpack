@@ -102,3 +102,25 @@ fn a_field_prefab_loads_as_a_scene() {
     let model = p.load("f002/f002_001").unwrap();
     assert_eq!(model.validate(), Ok(()));
 }
+
+#[test]
+fn open_takes_anything_that_is_a_path() {
+    let Some(dir) = std::env::var_os("NOCTURNE_GAME_DIR") else {
+        return;
+    };
+    let dir = PathBuf::from(dir);
+    let text = dir.to_str().unwrap().to_string();
+    // &str, String, &Path, PathBuf and &PathBuf
+    let counts = [
+        Nocturne::open(text.as_str()).unwrap(),
+        Nocturne::open(text.clone()).unwrap(),
+        Nocturne::open(dir.as_path()).unwrap(),
+        Nocturne::open(dir.clone()).unwrap(),
+        Nocturne::open(&dir).unwrap(),
+    ]
+    .map(|p| p.install().demon_bundles().len());
+    assert!(
+        counts.iter().all(|&n| n == counts[0] && n > 200),
+        "{counts:?}"
+    );
+}

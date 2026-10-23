@@ -34,10 +34,21 @@ pub struct Nocturne {
 }
 
 impl Nocturne {
-    /// Opens a game folder (the one that holds `smt3hd_Data`).
-    pub fn open(game: &std::path::Path) -> Result<Self> {
+    /// Opens a game folder (the one that holds `smt3hd_Data`); a leading `~/` is expanded.
+    ///
+    /// ```no_run
+    /// use rewrite_bridge::Provider;
+    ///
+    /// # fn main() -> Result<(), rewrite_bridge::BoxError> {
+    /// let nocturne = nocturne_unpack::bridge::Nocturne::open("~/Games/smt3hd")?;
+    /// let demon = nocturne.load_animated("dvl0x01")?;
+    /// println!("{} nodes", demon.model.nodes.len());
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn open(game: impl AsRef<std::path::Path>) -> Result<Self> {
         Ok(Nocturne {
-            install: Install::open(game)?,
+            install: Install::open(game.as_ref())?,
             textures: true,
             index: Mutex::new(None),
             field_index: Mutex::new(None),

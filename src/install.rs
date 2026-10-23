@@ -61,8 +61,8 @@ pub struct Install {
 
 impl Install {
     /// Opens a game folder (`~/Games/smt3hd`) or directly its `StreamingAssets/PC` folder.
-    pub fn open(game: &Path) -> Result<Install> {
-        let game = expand_home(game);
+    pub fn open(game: impl AsRef<Path>) -> Result<Install> {
+        let game = expand_home(game.as_ref());
         let pc = [
             game.join("smt3hd_Data/StreamingAssets/PC"),
             game.join("StreamingAssets/PC"),
