@@ -2,7 +2,7 @@
 
 `nocturne-unpack` reads UnityFS bundles with [rabex](https://github.com/jakobhellermann/RustyAssetBundleEXtractor)
 0.2.1 (MIT OR Apache-2.0). That release cannot open the bundles of this game (Unity 2019.4, bundle
-format version 6), so `vendor/rabex` is a copy of 0.2.1 with two small changes, wired in through
+format version 6), so `vendor/rabex` is a copy of 0.2.1 with three small changes, wired in through
 `[patch.crates-io]`. The same changes are in `patches/rabex-0.2.1.patch` (a `diff -ru` of `src/`,
 `-p1` applies it to a checkout of the crate). With them all 2,251 base-game bundles and the DLC
 bundles open and decode.
@@ -35,6 +35,17 @@ File: `src/files/bundlefile/reader.rs`.
 `start..start + len` of a file entry. `read_at_entry` has to decompress a whole entry, which is
 wasteful for `.resS` files (streamed textures and meshes) when one object needs a few kilobytes.
 It reuses the existing `read_single_file`.
+
+## 3. Reserve the buffer for a file read from a bundle
+
+File: `src/files/bundlefile/reader.rs`, function `read_single_file`.
+
+The decompressed blocks are appended to a `Vec::new()`, which grows by doubling and copies the data each
+time. For a 90 MB serialized file that means a chain of freed buffers up to the size of the file, and with
+macOS's allocator the process kept about 12 MB more resident every time the same bundle was opened and dropped
+again (a 62 MB bundle opened 12 times: 393 MB, 415, 423, ... 541 MB, peak 844 MB). Reserving
+`file.size` plus the part of the first block that precedes the file removes it (393 MB, 394 MB, ... 395 MB, peak
+463 MB). Opening every field bundle prefab by prefab (1,497 times) is the case where it matters.
 
 ## Not changed, but worth knowing
 

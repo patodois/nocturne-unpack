@@ -119,7 +119,7 @@ fn demon_clip_samples_like_the_polynomials() {
 }
 
 #[test]
-fn vishnu_loads_with_skin_and_clips() {
+fn demon_0x01_loads_with_skin_and_clips() {
     let Some(install) = install() else { return };
     let b = Bundle::open(&install.resolve("dvl0x01").unwrap()).unwrap();
     let a = prefab::load(&install, &b, prefab::Which::Main, &Options::default()).unwrap();

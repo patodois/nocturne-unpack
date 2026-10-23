@@ -254,7 +254,9 @@ fn read_single_file(
 
     let mut skip_read = file.offset as usize - block_offset_uncompressed as usize;
 
-    let mut data = Vec::new();
+    // Decompressed blocks are appended: reserve what the file needs plus the block it may start
+    // in, so the buffer is not regrown (and copied) over and over for large files
+    let mut data = Vec::with_capacity(file.size.max(0) as usize + (file.offset as usize - block_offset_uncompressed as usize));
     let mut block_offset = block_offset_uncompressed as usize;
 
     while let Some(block) = blocks.get(block_index) {

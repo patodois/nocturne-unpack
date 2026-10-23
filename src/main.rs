@@ -62,6 +62,9 @@ enum Command {
         /// Only bundles whose name contains this text
         #[arg(long)]
         only: Option<String>,
+        /// `demons` (the default) or `fields`; a field is loaded with all its prefabs at once
+        #[arg(long, default_value = "demons")]
+        kind: String,
         /// Skip texture decoding
         #[arg(long)]
         no_textures: bool,
@@ -142,6 +145,21 @@ enum Command {
     },
 }
 
+/// Hands freed memory back to the system, so that a sweep over many bundles does not keep what
+/// earlier ones used (macOS keeps freed blocks resident otherwise).
+fn release_memory() {
+    #[cfg(target_os = "macos")]
+    {
+        extern "C" {
+            fn malloc_zone_pressure_relief(zone: *mut std::ffi::c_void, goal: usize) -> usize;
+        }
+        // SAFETY: a null zone means all zones; the call only releases free memory
+        unsafe {
+            malloc_zone_pressure_relief(std::ptr::null_mut(), 0);
+        }
+    }
+}
+
 fn rss_mb() -> f64 {
     let mut ru: libc::rusage = unsafe { std::mem::zeroed() };
     unsafe { libc::getrusage(libc::RUSAGE_SELF, &mut ru) };
@@ -194,9 +212,15 @@ fn main() -> Result<()> {
         Command::Check {
             game,
             only,
+            kind,
             no_textures,
         } => {
             let install = Install::open(&game)?;
+            anyhow::ensure!(
+                kind == "demons" || kind == "fields",
+                "--kind is demons or fields"
+            );
+            let fields = kind == "fields";
             let t0 = Instant::now();
             let opts = prefab::Options {
                 textures: !no_textures,
@@ -206,7 +230,14 @@ fn main() -> Result<()> {
             let mut report = nocturne_unpack::asset::Report::default();
             let mut totals: BTreeMap<&'static str, usize> = BTreeMap::new();
             let mut bundles = 0;
-            for p in install.demon_bundles() {
+            let mut shaders: BTreeMap<String, usize> = BTreeMap::new();
+            let mut tiled = 0;
+            let list = if fields {
+                install.field_bundles()
+            } else {
+                install.demon_bundles()
+            };
+            for p in list {
                 let name = p.file_name().unwrap().to_string_lossy().to_string();
                 if only.as_deref().is_some_and(|o| !name.contains(o)) {
                     continue;
@@ -228,9 +259,20 @@ fn main() -> Result<()> {
                     data_only += 1;
                     continue;
                 }
-                match prefab::load(&install, &b, prefab::Which::Main, &opts) {
+                let which = if fields {
+                    prefab::Which::All
+                } else {
+                    prefab::Which::Main
+                };
+                match prefab::load(&install, &b, which, &opts) {
                     Ok(a) => {
                         ok += 1;
+                        for m in &a.materials {
+                            *shaders.entry(m.shader.clone()).or_default() += 1;
+                            tiled += usize::from(
+                                m.base_color.as_ref().is_some_and(|t| t.transform.is_some()),
+                            );
+                        }
                         for (k, v) in prefab::summary(&a) {
                             *totals.entry(k).or_default() += v;
                         }
@@ -241,14 +283,16 @@ fn main() -> Result<()> {
                         println!("FAIL {name}: {e:#}");
                     }
                 }
+                release_memory();
             }
             println!(
-                "{bundles} demon bundles: {ok} loaded, {data_only} without a model (a data table and sounds only), {failed} failures; {:.1} s, peak RSS {:.0} MB",
+                "{bundles} {kind} bundles: {ok} loaded, {data_only} without a Unity model (only a data table and sounds, or console-era files), {failed} failures; {:.1} s, peak RSS {:.0} MB",
                 t0.elapsed().as_secs_f32(),
                 rss_mb()
             );
             println!("totals: {totals:?}");
-            println!("(all demons)");
+            println!("materials by shader: {shaders:?}; {tiled} with a tiled or offset _MainTex");
+            println!("(all {kind})");
             print_report(&report, verbose);
             if failed > 0 {
                 std::process::exit(1);
@@ -389,6 +433,7 @@ fn census(game: &std::path::Path, only: Option<&str>, decode: bool) -> Result<()
                 }
             }
         }
+        release_memory();
         let r = rss_mb();
         if r > peak_at.0 {
             peak_at = (r, name.clone());
@@ -440,11 +485,6 @@ fn anim_diag(game: &std::path::Path, bundle: &str) -> Result<()> {
         .iter()
         .flat_map(|&id| b.read::<Avatar>(id).map(|a| a.m_TOS).unwrap_or_default())
         .collect();
-    if std::env::var_os("NOCT_PATHS").is_some() {
-        for (i, p) in paths.iter().enumerate() {
-            println!("node {i} {:?}", p);
-        }
-    }
     for id in prefab::controller_clips(&b, &r, root)? {
         let c: AnimationClip = b.read(id)?;
         let cc = clip::read_curves(&c)?;
@@ -522,10 +562,11 @@ fn check_bridge(
         if is_level {
             fields += 1;
             // A field prefab loads both ways: as one static model and as a scene
-            let r = provider.load(&d.id).and_then(|m| {
-                m.validate()?;
-                provider.load_scene(&d.id)
-            });
+            // The static model is checked and dropped before the scene is built
+            let r = provider
+                .load(&d.id)
+                .and_then(|m| m.validate().map_err(Into::into))
+                .and_then(|()| provider.load_scene(&d.id));
             match r {
                 Ok(sc) => {
                     ok += 1;
@@ -576,6 +617,7 @@ fn check_bridge(
                 }
             }
         }
+        release_memory();
         let r = rss_mb();
         if r > peak.0 {
             peak = (r, d.id.clone());
@@ -868,6 +910,9 @@ fn list_bundle(install: &Install, bundle: &str) -> Result<()> {
         b.unity_version(),
         b.has_type_tree()
     );
+    for (entry, size) in b.entries() {
+        println!("entry {entry}: {}", mb(size));
+    }
     if let Some(&id) = b.objects_of(class::ASSET_BUNDLE).first() {
         let ab: AssetBundle = b.read(id)?;
         if !ab.m_Dependencies.is_empty() {

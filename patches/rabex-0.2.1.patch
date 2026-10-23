@@ -37,7 +37,7 @@ diff -ru a/src/files/bundlefile/mod.rs b/src/files/bundlefile/mod.rs
  
 diff -ru a/src/files/bundlefile/reader.rs b/src/files/bundlefile/reader.rs
 --- a/src/files/bundlefile/reader.rs	2026-10-23 12:38:05
-+++ b/src/files/bundlefile/reader.rs	2026-10-23 12:38:54
++++ b/src/files/bundlefile/reader.rs	2026-10-23 13:51:41
 @@ -196,6 +196,28 @@
          let data = &self.reader.get_ref().as_ref()[self.data_offset as usize..];
          read_single_file(&self.blocks, entry, data)
@@ -67,3 +67,14 @@ diff -ru a/src/files/bundlefile/reader.rs b/src/files/bundlefile/reader.rs
  }
  
  fn scan_file_start(blocks: &[StorageBlock], file: &FileEntry) -> (usize, u64, u64) {
+@@ -232,7 +254,9 @@
+ 
+     let mut skip_read = file.offset as usize - block_offset_uncompressed as usize;
+ 
+-    let mut data = Vec::new();
++    // Decompressed blocks are appended: reserve what the file needs plus the block it may start
++    // in, so the buffer is not regrown (and copied) over and over for large files
++    let mut data = Vec::with_capacity(file.size.max(0) as usize + (file.offset as usize - block_offset_uncompressed as usize));
+     let mut block_offset = block_offset_uncompressed as usize;
+ 
+     while let Some(block) = blocks.get(block_index) {

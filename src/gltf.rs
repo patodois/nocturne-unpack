@@ -338,9 +338,12 @@ pub fn to_glb(a: &Asset) -> Result<Vec<u8>> {
     if uses_transform {
         doc["extensionsUsed"] = json!(["KHR_texture_transform"]);
     }
-    doc["accessors"] = json!(b.accessors);
-    doc["bufferViews"] = json!(b.views);
-    doc["buffers"] = json!([{"byteLength": b.bin.len()}]);
+    // A model without geometry or clips has no data to point at, and glTF forbids empty lists
+    if !b.bin.is_empty() {
+        doc["accessors"] = json!(b.accessors);
+        doc["bufferViews"] = json!(b.views);
+        doc["buffers"] = json!([{"byteLength": b.bin.len()}]);
+    }
 
     let mut json_bytes = serde_json::to_vec(&doc)?;
     while !json_bytes.len().is_multiple_of(4) {
@@ -349,7 +352,8 @@ pub fn to_glb(a: &Asset) -> Result<Vec<u8>> {
     while !b.bin.len().is_multiple_of(4) {
         b.bin.push(0);
     }
-    let total = 12 + 8 + json_bytes.len() + 8 + b.bin.len();
+    let bin_chunk = if b.bin.is_empty() { 0 } else { 8 + b.bin.len() };
+    let total = 12 + 8 + json_bytes.len() + bin_chunk;
     let mut out = Vec::with_capacity(total);
     out.extend_from_slice(b"glTF");
     out.extend_from_slice(&2u32.to_le_bytes());
@@ -357,9 +361,11 @@ pub fn to_glb(a: &Asset) -> Result<Vec<u8>> {
     out.extend_from_slice(&(json_bytes.len() as u32).to_le_bytes());
     out.extend_from_slice(b"JSON");
     out.extend_from_slice(&json_bytes);
-    out.extend_from_slice(&(b.bin.len() as u32).to_le_bytes());
-    out.extend_from_slice(b"BIN\0");
-    out.extend_from_slice(&b.bin);
+    if !b.bin.is_empty() {
+        out.extend_from_slice(&(b.bin.len() as u32).to_le_bytes());
+        out.extend_from_slice(b"BIN\0");
+        out.extend_from_slice(&b.bin);
+    }
     Ok(out)
 }
 
@@ -367,6 +373,28 @@ pub fn to_glb(a: &Asset) -> Result<Vec<u8>> {
 mod tests {
     use super::*;
     use crate::asset::{Material, Node, Primitive};
+
+    #[test]
+    fn a_model_without_data_has_no_buffer() {
+        let a = Asset {
+            name: "empty".into(),
+            nodes: vec![Node {
+                name: "n".into(),
+                parent: None,
+                translation: [0.0; 3],
+                rotation: [0.0, 0.0, 0.0, 1.0],
+                scale: [1.0; 3],
+            }],
+            ..Default::default()
+        };
+        let glb = to_glb(&a).unwrap();
+        let total = u32::from_le_bytes(glb[8..12].try_into().unwrap()) as usize;
+        assert_eq!(total, glb.len());
+        let jlen = u32::from_le_bytes(glb[12..16].try_into().unwrap()) as usize;
+        assert_eq!(glb.len(), 20 + jlen);
+        let json: Value = serde_json::from_slice(&glb[20..20 + jlen]).unwrap();
+        assert!(json.get("buffers").is_none() && json.get("accessors").is_none());
+    }
 
     #[test]
     fn writes_a_parsable_glb() {

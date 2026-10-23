@@ -17,15 +17,25 @@ fn provider() -> Option<Nocturne> {
 fn lists_demons_and_field_prefabs() {
     let Some(p) = provider() else { return };
     let all = p.list("").unwrap();
-    let demons = all.iter().filter(|a| a.kind == AssetKind::Character).count();
+    let demons = all
+        .iter()
+        .filter(|a| a.kind == AssetKind::Character)
+        .count();
     let levels = all.iter().filter(|a| a.kind == AssetKind::Level).count();
-    assert_eq!(demons, 234, "demons with a model (259 bundles, 25 hold only data)");
+    assert_eq!(
+        demons, 234,
+        "demons with a model (259 bundles, 25 hold only data)"
+    );
     assert!(levels > 1000, "{levels} field prefabs");
-    let vishnu = p.list("dvl0x01").unwrap();
-    assert_eq!(vishnu.len(), 1);
-    assert_eq!(vishnu[0].id, "dvl0x01");
-    assert_eq!(vishnu[0].name, "devil_0x01");
-    assert!(p.list("f002/f002_001").unwrap().iter().any(|a| a.id == "f002/f002_001"));
+    let first = p.list("dvl0x01").unwrap();
+    assert_eq!(first.len(), 1);
+    assert_eq!(first[0].id, "dvl0x01");
+    assert_eq!(first[0].name, "devil_0x01");
+    assert!(p
+        .list("f002/f002_001")
+        .unwrap()
+        .iter()
+        .any(|a| a.id == "f002/f002_001"));
 }
 
 #[test]
@@ -57,7 +67,10 @@ fn a_field_prefab_loads_as_a_scene() {
     let scene = p.load_scene("f002/f002_001").unwrap();
     assert_eq!(scene.validate(), Ok(()));
     assert!(!scene.instances.is_empty());
-    assert!(scene.models.iter().all(|m| matches!(m, SceneModel::Inline(_))));
+    assert!(scene
+        .models
+        .iter()
+        .all(|m| matches!(m, SceneModel::Inline(_))));
     // Demons are not scenes
     let e = p.load_scene("dvl0x01").unwrap_err();
     assert!(e.downcast_ref::<NotSupported>().is_some());
