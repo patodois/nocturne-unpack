@@ -204,6 +204,9 @@ impl Report {
     }
 
     pub fn add_n(&mut self, what: impl Into<String>, n: usize) {
+        if n == 0 {
+            return;
+        }
         *self.left_out.entry(what.into()).or_default() += n;
     }
 

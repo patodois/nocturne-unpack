@@ -240,7 +240,28 @@ pub fn read_curves(clip: &AnimationClip) -> Result<ClipCurves> {
     let kc = &c.m_ConstantClip;
     let n_stream = sc.curveCount as usize;
     let n_dense = dc.m_CurveCount as usize;
-    let mut curves = vec![Curve::default(); n_stream + n_dense + kc.data.len()];
+    // The counts come from the file and size the allocation below, so they are checked first
+    // against what the bindings own (a clip of a few thousand curves is large). Times that are not
+    // numbers would break the ordering of the keys.
+    let total: usize = slots(&clip.m_ClipBindingConstant.genericBindings)
+        .iter()
+        .map(|s| s.curve_count)
+        .sum();
+    let curve_count = n_stream
+        .checked_add(n_dense)
+        .and_then(|n| n.checked_add(kc.data.len()));
+    ensure!(
+        curve_count == Some(total),
+        "bindings own {total} curves but the clip has {n_stream} streamed, {n_dense} dense and {} constant",
+        kc.data.len()
+    );
+    ensure!(
+        m.m_StartTime.is_finite() && m.m_StopTime.is_finite(),
+        "clip range {} to {} is not finite",
+        m.m_StartTime,
+        m.m_StopTime
+    );
+    let mut curves = vec![Curve::default(); total];
 
     // Streamed
     let d = &sc.data;
@@ -288,7 +309,12 @@ pub fn read_curves(clip: &AnimationClip) -> Result<ClipCurves> {
             "dense clip holds {} samples for {frames} frames of {n_dense} curves",
             dc.m_SampleArray.len()
         );
-        ensure!(dc.m_SampleRate > 0.0, "dense clip with sample rate 0");
+        ensure!(
+            dc.m_SampleRate > 0.0 && dc.m_SampleRate.is_finite() && dc.m_BeginTime.is_finite(),
+            "dense clip with sample rate {} from {}",
+            dc.m_SampleRate,
+            dc.m_BeginTime
+        );
         for k in 0..n_dense {
             let cv = &mut curves[n_stream + k];
             for f in 0..frames {
@@ -370,6 +396,9 @@ pub struct Channel {
     pub steps_encoded: usize,
     /// Keys added to an Euler rotation channel to stay within [`EULER_TOLERANCE_DEG`]
     pub approximated: usize,
+    /// Rotation keys negated (with their tangents) because the key before lay in the opposite
+    /// hemisphere: `q` and `-q` are one rotation, but interpolating towards `-q` goes the long way
+    pub hemisphere_flips: usize,
     /// Largest angle (degrees) between the written channel and the game's Euler curve at the
     /// midpoints checked
     pub max_error_deg: f32,
@@ -390,7 +419,7 @@ fn union_times(comps: &[&Curve]) -> Vec<f32> {
         .iter()
         .flat_map(|c| c.keys.iter().map(|k| k.time))
         .collect();
-    times.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    times.sort_by(f32::total_cmp);
     times.dedup();
     times
 }
@@ -425,7 +454,7 @@ pub fn build_channel(prop: Prop, comps: &[&Curve]) -> Result<Channel> {
             }
         }
         times.extend(extra);
-        times.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        times.sort_by(f32::total_cmp);
         times.dedup();
     }
     let keyframes = times.len();
@@ -450,6 +479,26 @@ pub fn build_channel(prop: Prop, comps: &[&Curve]) -> Result<Channel> {
     } else {
         Interp::Cubic
     };
+    // Successive rotation keys stay in one hemisphere, so that every player interpolates between
+    // them the short way (a step holds its key, so it needs no such care)
+    let mut hemisphere_flips = 0;
+    if prop == Prop::Rotation && n == 4 && interp != Interp::Step {
+        for k in 1..keyframes {
+            let dot: f32 = (0..4)
+                .map(|i| values[(k - 1) * 4 + i] * values[k * 4 + i])
+                .sum();
+            if dot < 0.0 {
+                for x in values[k * 4..(k + 1) * 4]
+                    .iter_mut()
+                    .chain(&mut in_t[k * 4..(k + 1) * 4])
+                    .chain(&mut out_t[k * 4..(k + 1) * 4])
+                {
+                    *x = -*x;
+                }
+                hemisphere_flips += 1;
+            }
+        }
+    }
     Ok(Channel {
         prop,
         interp,
@@ -460,6 +509,7 @@ pub fn build_channel(prop: Prop, comps: &[&Curve]) -> Result<Channel> {
         out_tangents: out_t,
         steps_encoded,
         approximated: 0,
+        hemisphere_flips,
         max_error_deg: 0.0,
     })
 }
@@ -474,8 +524,19 @@ fn quat_dot(a: &[f32; 4], b: &[f32; 4]) -> f32 {
     a.iter().zip(b).map(|(x, y)| x * y).sum()
 }
 
+/// The angle of the rotation between two unit quaternions, in degrees. `2 acos(|a . b|)` cannot
+/// tell two quaternions that differ by a rounding error from two that are 0.05 degrees apart: a
+/// dot product of 1 - 6e-8, the last float below 1, already reads as 0.04 degrees. The chord
+/// between them (`|a - b| = 2 sin(angle / 4)`, taken with `b` in `a`'s hemisphere) has no such
+/// floor.
 fn quat_angle_deg(a: &[f32; 4], b: &[f32; 4]) -> f32 {
-    2.0 * quat_dot(a, b).abs().clamp(0.0, 1.0).acos().to_degrees()
+    let sign = if quat_dot(a, b) < 0.0 { -1.0 } else { 1.0 };
+    let chord2: f64 = a
+        .iter()
+        .zip(b)
+        .map(|(&x, &y)| (x as f64 - sign * y as f64).powi(2))
+        .sum();
+    (4.0 * (0.5 * chord2.sqrt()).min(1.0).asin()).to_degrees() as f32
 }
 
 fn quat_slerp(a: &[f32; 4], b: &[f32; 4], u: f32) -> [f32; 4] {
@@ -518,7 +579,7 @@ pub fn build_euler_channel(comps: &[&Curve], order: [usize; 3]) -> Result<Channe
         }
     }
     times.extend(extra);
-    times.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    times.sort_by(f32::total_cmp);
     times.dedup();
 
     // Keys with the shortest path between neighbours
@@ -568,6 +629,7 @@ pub fn build_euler_channel(comps: &[&Curve], order: [usize; 3]) -> Result<Channe
         out_tangents: vec![0.0; n * 4],
         steps_encoded: 0,
         approximated,
+        hemisphere_flips: 0,
         max_error_deg: max_err,
     })
 }
@@ -727,6 +789,12 @@ pub fn euler_to_quaternion(deg: [f32; 3], order: [usize; 3]) -> [f32; 4] {
     quat_mul(q2, quat_mul(q1, q0))
 }
 
+/// [`euler_order`] as an error for a rotation order the tool does not know.
+pub fn euler_order_of(custom_type: u8) -> Result<[usize; 3]> {
+    euler_order(custom_type)
+        .ok_or_else(|| anyhow::anyhow!("unknown Euler rotation order {custom_type}"))
+}
+
 /// Counts of what a clip's bindings drive that this crate does not read.
 pub fn unread_bindings(slots: &[Slot]) -> BTreeMap<String, usize> {
     let mut m = BTreeMap::new();
@@ -811,6 +879,18 @@ mod tests {
         dense: DenseClip,
         constant: Vec<f32>,
     ) -> AnimationClip {
+        let bound_curves = curves as usize + dense.m_CurveCount as usize + constant.len();
+        clip_bound(streamed, curves, dense, constant, bound_curves)
+    }
+
+    /// A clip whose bindings own `bound_curves` curves, whatever its three groups hold.
+    fn clip_bound(
+        streamed: Vec<u32>,
+        curves: u32,
+        dense: DenseClip,
+        constant: Vec<f32>,
+        bound_curves: usize,
+    ) -> AnimationClip {
         use crate::unity::{
             ClipBindingConstant, ClipMuscleConstant, ConstantClip, OffsetPtrClip, StreamedClip,
         };
@@ -841,7 +921,16 @@ mod tests {
                 m_StopTime: 1.0,
                 m_LoopTime: false,
             },
-            m_ClipBindingConstant: ClipBindingConstant::default(),
+            // One single-curve binding (something other than a Transform) per curve
+            m_ClipBindingConstant: ClipBindingConstant {
+                genericBindings: vec![
+                    GenericBinding {
+                        typeID: 137,
+                        ..Default::default()
+                    };
+                    bound_curves
+                ],
+            },
         }
     }
 
@@ -913,6 +1002,140 @@ mod tests {
             vec![],
         );
         assert!(read_curves(&c).is_err());
+    }
+
+    #[test]
+    fn curve_counts_must_match_the_bindings_before_anything_is_allocated() {
+        // 20 million streamed curves (640 MB of empty curves, where u32::MAX would be 137 GB)
+        // that no binding owns
+        let c = clip_bound(vec![], 20_000_000, DenseClip::default(), vec![], 0);
+        let e = read_curves(&c).unwrap_err().to_string();
+        assert!(e.contains("bindings own 0 curves"), "{e}");
+        // The same for the dense and the constant groups
+        let dense = DenseClip {
+            m_CurveCount: u32::MAX,
+            ..Default::default()
+        };
+        assert!(read_curves(&clip_bound(vec![], 0, dense, vec![], 1)).is_err());
+        assert!(read_curves(&clip_bound(
+            vec![],
+            0,
+            DenseClip::default(),
+            vec![0.0; 3],
+            2
+        ))
+        .is_err());
+    }
+
+    #[test]
+    fn times_that_are_not_numbers_are_errors_and_never_panics() {
+        let mut c = clip_with(vec![], 0, DenseClip::default(), vec![1.0]);
+        c.m_MuscleClip.m_StartTime = f32::NAN;
+        assert!(read_curves(&c).is_err());
+        let mut c = clip_with(vec![], 0, DenseClip::default(), vec![1.0]);
+        c.m_MuscleClip.m_StopTime = f32::INFINITY;
+        assert!(read_curves(&c).is_err());
+        let dense = DenseClip {
+            m_FrameCount: 2,
+            m_CurveCount: 1,
+            m_SampleRate: 30.0,
+            m_BeginTime: f32::NAN,
+            m_SampleArray: vec![0.0, 1.0],
+        };
+        assert!(read_curves(&clip_with(vec![], 0, dense, vec![])).is_err());
+    }
+
+    #[test]
+    fn key_times_that_are_not_numbers_do_not_panic_when_sorted() {
+        // A curve built by hand with such a key: the times of the keys are sorted to be merged
+        let c = Curve {
+            keys: vec![
+                key(1.0, 0.0, 0.0, 0.0, 1.0),
+                key(f32::NAN, 0.0, 0.0, 0.0, 2.0),
+            ],
+            initial: None,
+        };
+        let _ = build_channel(Prop::Position, &[&c, &c, &c]);
+        let _ = build_channel(Prop::Scale, &[&c, &c, &c]);
+        let _ = build_euler_channel(&[&c, &c, &c], [0, 1, 2]);
+    }
+
+    #[test]
+    fn rotation_keys_in_opposite_hemispheres_are_made_continuous() {
+        // Four straight segments from (0, 0, 0, 1) to the same rotation written as -q, with a
+        // small turn about x added: the written keys must be neighbours, not opposites
+        let line = |from: f32, to: f32| Curve {
+            keys: vec![
+                key(0.0, 0.0, 0.0, to - from, from),
+                key(1.0, 0.0, 0.0, 0.0, to),
+            ],
+            initial: None,
+        };
+        let q1 = [0.1f32, 0.0, 0.0, -0.99499];
+        let comps = [
+            line(0.0, q1[0]),
+            line(0.0, q1[1]),
+            line(0.0, q1[2]),
+            line(1.0, q1[3]),
+        ];
+        let refs: Vec<&Curve> = comps.iter().collect();
+        let ch = build_channel(Prop::Rotation, &refs).unwrap();
+        assert_eq!(ch.interp, Interp::Linear);
+        assert_eq!(ch.hemisphere_flips, 1);
+        let dot: f32 = (0..4).map(|i| ch.values[i] * ch.values[4 + i]).sum();
+        assert!(dot > 0.99, "{dot}");
+        // Halfway is a small turn, not a pass through the origin
+        let mid = sample_channel(&ch, 0.5);
+        assert!(mid[3] > 0.99, "{mid:?}");
+        // Position channels are not touched
+        let pos = build_channel(Prop::Position, &[&comps[0], &comps[0], &comps[0]]).unwrap();
+        assert_eq!(pos.hemisphere_flips, 0);
+    }
+
+    #[test]
+    fn stepped_euler_curves_report_no_error_and_get_no_extra_keys() {
+        // Hundreds of held angles from a small generator: every hold gives the same rotation at both
+        // ends of its interval, so the written channel is exact. Measuring the angle between two
+        // such quaternions with acos(dot) reads 0.04 to 0.06 degrees for some of them, which is
+        // above the tolerance, so keys were added and the channel reported as inexact
+        let mut seed = 12345u32;
+        let mut angle = move || {
+            seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
+            (seed >> 8) as f32 / (1u32 << 24) as f32 * 360.0 - 180.0
+        };
+        let comps: Vec<Curve> = (0..3)
+            .map(|_| Curve {
+                keys: (0..4000)
+                    .map(|i| key(i as f32 / 30.0, 0.0, 0.0, 0.0, angle()))
+                    .collect(),
+                initial: None,
+            })
+            .collect();
+        let refs: Vec<&Curve> = comps.iter().collect();
+        let ch = build_euler_channel(&refs, euler_order(4).unwrap()).unwrap();
+        assert_eq!(ch.interp, Interp::Step);
+        assert_eq!(ch.approximated, 0);
+        assert!(ch.max_error_deg < 1e-3, "{}", ch.max_error_deg);
+    }
+
+    #[test]
+    fn the_angle_between_quaternions_has_no_rounding_floor() {
+        let q = euler_to_quaternion([-71.92637, 51.360905, -90.000404], euler_order(4).unwrap());
+        assert_eq!(quat_angle_deg(&q, &q), 0.0);
+        let neg = q.map(|x| -x);
+        assert_eq!(quat_angle_deg(&q, &neg), 0.0);
+        // A turn of 0.01 degrees about x reads as 0.01 degrees, and 90 as 90
+        let turn = |deg: f32| euler_to_quaternion([deg, 0.0, 0.0], [0, 1, 2]);
+        let small = quat_angle_deg(&turn(0.0), &turn(0.01));
+        assert!((small - 0.01).abs() < 1e-4, "{small}");
+        assert!((quat_angle_deg(&turn(0.0), &turn(90.0)) - 90.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn an_unknown_euler_order_is_an_error() {
+        assert!(euler_order_of(4).is_ok());
+        let e = euler_order_of(9).unwrap_err().to_string();
+        assert!(e.contains("rotation order 9"), "{e}");
     }
 
     #[test]

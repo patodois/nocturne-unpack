@@ -748,6 +748,10 @@ impl Loader<'_> {
                 "jumps inside smooth curves, written one float step early",
                 ch.steps_encoded,
             );
+            self.asset.report.add_n(
+                "rotation keys negated to stay in the hemisphere of the key before",
+                ch.hemisphere_flips,
+            );
             if prop == Prop::Euler && ch.times.len() > 1 {
                 self.asset
                     .report
