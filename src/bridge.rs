@@ -22,6 +22,7 @@ use crate::asset::{self, Asset};
 use crate::bundle::Bundle;
 use crate::install::Install;
 use crate::prefab::{self, Options};
+use crate::rig::Rig;
 
 pub struct Nocturne {
     install: Install,
@@ -97,7 +98,13 @@ impl Nocturne {
                         continue;
                     };
                     let Ok(b) = Bundle::open(&p) else { continue };
-                    for (path, _) in prefab::prefab_roots(&b).unwrap_or_default() {
+                    for (path, go) in prefab::prefab_roots(&b).unwrap_or_default() {
+                        // A prefab with nothing to draw is not a scene worth listing
+                        let has_geometry = Rig::from_game_object(&b, go)
+                            .is_ok_and(|rig| prefab::has_geometry(&b, &rig));
+                        if !has_geometry {
+                            continue;
+                        }
                         let stem = path.rsplit('/').next().unwrap_or(&path);
                         let stem = stem.trim_end_matches(".prefab");
                         v.push((format!("{bundle_name}/{stem}"), stem.to_string()));

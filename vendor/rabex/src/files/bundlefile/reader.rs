@@ -254,9 +254,17 @@ fn read_single_file(
 
     let mut skip_read = file.offset as usize - block_offset_uncompressed as usize;
 
-    // Decompressed blocks are appended: reserve what the file needs plus the block it may start
-    // in, so the buffer is not regrown (and copied) over and over for large files
-    let mut data = Vec::with_capacity(file.size.max(0) as usize + (file.offset as usize - block_offset_uncompressed as usize));
+    // The decompressed blocks are appended here, starting with the one the file begins in and
+    // ending with the one it ends in, so reserve what the file needs plus the part of the first
+    // block before it and the part of the last block after it (at most one block). A buffer
+    // that grows by doubling copies a large file several times and leaves a chain of freed
+    // buffers behind.
+    let largest_block = blocks
+        .iter()
+        .map(|b| b.uncompressed_size as usize)
+        .max()
+        .unwrap_or(0);
+    let mut data = Vec::with_capacity(file.size.max(0) as usize + skip_read + largest_block);
     let mut block_offset = block_offset_uncompressed as usize;
 
     while let Some(block) = blocks.get(block_index) {

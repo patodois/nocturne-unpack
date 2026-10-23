@@ -94,6 +94,37 @@ pub fn controller_clips(bundle: &Bundle, rig: &Rig, anim_root: usize) -> Result<
     Ok(clip_ids)
 }
 
+/// Whether loading the rig would produce any geometry: an enabled renderer on an active object
+/// with a mesh. A prefab without one (an empty block, a lights-only prefab) yields nothing to
+/// draw.
+pub fn has_geometry(bundle: &Bundle, rig: &Rig) -> bool {
+    rig.nodes.iter().enumerate().any(|(ni, node)| {
+        let Some(rend) = node
+            .components
+            .iter()
+            .find(|c| c.class == class::MESH_RENDERER || c.class == class::SKINNED_MESH_RENDERER)
+        else {
+            return false;
+        };
+        let Ok(r) = bundle.read::<Renderer>(rend.id) else {
+            return false;
+        };
+        if !r.m_Enabled || !rig.active_in_hierarchy(ni) {
+            return false;
+        }
+        let mesh = if rend.class == class::SKINNED_MESH_RENDERER {
+            Some(r.m_Mesh)
+        } else {
+            node.components
+                .iter()
+                .find(|c| c.class == class::MESH_FILTER)
+                .and_then(|f| bundle.read::<MeshFilter>(f.id).ok())
+                .map(|f| f.m_Mesh)
+        };
+        mesh.is_some_and(|m| m.local().is_some())
+    })
+}
+
 struct Loader<'a> {
     install: &'a Install,
     bundle: &'a Bundle,

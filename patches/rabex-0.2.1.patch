@@ -37,7 +37,7 @@ diff -ru a/src/files/bundlefile/mod.rs b/src/files/bundlefile/mod.rs
  
 diff -ru a/src/files/bundlefile/reader.rs b/src/files/bundlefile/reader.rs
 --- a/src/files/bundlefile/reader.rs	2026-10-23 12:38:05
-+++ b/src/files/bundlefile/reader.rs	2026-10-23 13:51:41
++++ b/src/files/bundlefile/reader.rs	2026-10-23 14:15:32
 @@ -196,6 +196,28 @@
          let data = &self.reader.get_ref().as_ref()[self.data_offset as usize..];
          read_single_file(&self.blocks, entry, data)
@@ -67,14 +67,22 @@ diff -ru a/src/files/bundlefile/reader.rs b/src/files/bundlefile/reader.rs
  }
  
  fn scan_file_start(blocks: &[StorageBlock], file: &FileEntry) -> (usize, u64, u64) {
-@@ -232,7 +254,9 @@
+@@ -232,7 +254,17 @@
  
      let mut skip_read = file.offset as usize - block_offset_uncompressed as usize;
  
 -    let mut data = Vec::new();
-+    // Decompressed blocks are appended: reserve what the file needs plus the block it may start
-+    // in, so the buffer is not regrown (and copied) over and over for large files
-+    let mut data = Vec::with_capacity(file.size.max(0) as usize + (file.offset as usize - block_offset_uncompressed as usize));
++    // The decompressed blocks are appended here, starting with the one the file begins in and
++    // ending with the one it ends in, so reserve what the file needs plus the part of the first
++    // block before it and the part of the last block after it (at most one block). A buffer
++    // that grows by doubling copies a large file several times and leaves a chain of freed
++    // buffers behind.
++    let largest_block = blocks
++        .iter()
++        .map(|b| b.uncompressed_size as usize)
++        .max()
++        .unwrap_or(0);
++    let mut data = Vec::with_capacity(file.size.max(0) as usize + skip_read + largest_block);
      let mut block_offset = block_offset_uncompressed as usize;
  
      while let Some(block) = blocks.get(block_index) {

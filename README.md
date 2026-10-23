@@ -58,6 +58,11 @@ nocturne-unpack texture dvl0x01 0x01_t05 -o t05.png --game $G
 nocturne-unpack check-bridge --game $G
 nocturne-unpack check-bridge --game $G --kind demons --textures
 
+# The rewrite-bridge conformance checker on what the provider returns (options as in its README, plus
+# --game and --no-textures); --kind character for the demons, --kind level for field prefabs
+nocturne-unpack check-conformance --game $G --kind character --compare-load
+nocturne-unpack check-conformance --game $G --id f012/f012_002 -v
+
 # Object classes and texture formats across all bundles; --decode also decodes every texture and mesh
 nocturne-unpack census --game $G --decode
 
@@ -133,10 +138,10 @@ with the most renderers is the default) and everything it uses:
 ## rewrite-bridge
 
 With the `bridge` feature, `src/bridge.rs` implements [rewrite-bridge](https://github.com/patodois/rewrite-bridge)'s
-`Provider` (pinned to git rev `1b5820180efbd585916ab206e6bcbbcf33096e1e`), like wf-unpack's.
+`Provider` (pinned to git rev `0c5d0b0e08fcff58166f2ed6ad3daf9bdc72c0a8`), like wf-unpack's.
 
-- `list` returns every demon (id is the bundle name, `dvl0x01`, kind Character) and every field prefab (`f012/f012_002`,
-  kind Level).
+- `list` returns every demon (id is the bundle name, `dvl0x01`, kind Character) and every field prefab that has
+  something to draw (`f012/f012_002`, kind Level); prefabs of only transforms are left out.
 - `load_animated` returns a validated demon with its clips as `Animation`s and `Channel`s on the model's nodes; `load`
   is the same model. For a field prefab, `load` gives its static model.
 - `load_scene` (field prefabs) returns a scene: one inline model per distinct mesh with its materials, placed by an
@@ -144,6 +149,38 @@ With the `bridge` feature, `src/bridge.rs` implements [rewrite-bridge](https://g
   A world matrix with shear cannot be a translation, rotation and scale; it is counted and the closest transform kept.
 - The bridge has no place for texture samplers and tiling, vertex colours or a second UV set. Lights and cameras are not
   read.
+
+## Conformance
+
+`check-conformance` runs rewrite-bridge's conformance checker (`rewrite_bridge::conformance`) over the provider's output.
+Over all 234 demons (`load_animated`, `--compare-load`) it reports no errors; over 45 field prefabs spread over the
+install (`load_scene`) one, a mesh whose own triangles wind against its own normals. What it reports besides is
+the game's data, not the provider, and stays as it is (`-v` lists it):
+
+- `skin.bind_pose_mismatch` (info, 214 demons): Unity's bind poses are the bone's world-to-local matrix times the
+  *renderer's* local-to-world one, so the node pose is not the inverse of the inverse bind matrices when the
+  skinned mesh's node is not at the origin. glTF's skinning gives the same result as Unity's at rest, and the
+  renders at rest are undeformed.
+- `orientation.feet_off_ground` (75 demons), `scale.height_out_of_range` (15: nine to 25 m tall, and one 0.1 m object):
+  where a demon's origin is and how big it is are the prefab's; the game places and scales them elsewhere. A demon
+  such as `dvl0x0e` stays about 1.8 m above the origin in every frame checked of its clips `b00` and `b12`.
+- `front.not_plus_z` (46 demons): the checker compares named points (`eye`, `tail`) with the middle of the bounding
+  box. For some demons that is right (`dvl0x0e` faces -X at rest, as its renders show), for others it is not (`dvl0x0c`
+  and `dvl0x10` face +Z; their limbs and weapons reach forward, and `h_eye` is an effect anchor, not an eye).
+  The data has no front axis, so none is guessed.
+- `material.blend_opaque_texture` (35 demons, 37 field prefabs): these are additive materials (`_DstBlend` 1) and
+  materials whose alpha comes from vertex colours (not exported). glTF has no additive mode, so they come out as `BLEND`.
+  `material.opaque_transparent_texture`: the alpha channel of an opaque material's texture is data for the Atlus
+  shader, not transparency (render queue 2000, blend factors one and zero). Alpha modes follow Unity's keywords, and
+  in every Atlus material of the demons they agree with `_DstBlend` and the render queue (blend keywords go with
+  factor 1 or 10 and queue 3000, alpha test with queue 2450, the rest is opaque).
+- `orientation.not_upright` (6 demons): snakes and dragons, 7 m long and 1 m high. `animation.zero_scale` (`dvl0xc0d`):
+  the node `ebony` is hidden by scaling it to zero. `animation.pose_extent_mismatch` (4): a part that moves 9 m away from
+  the body during a clip (`dvl0x0e` `b12`), a skeleton that retracts to a fifth of its size (`dvl0x95` `b01`). `animation.duplicate_name` / `animation.empty`
+  (`dvl0x110`, `dvl0x40`, `dvl0x73`): the animator lists two clips with the same name (in `dvl0x110` the second has 119
+  bindings against 171) and one of them resolves to no channel. `scene.instance_scale_extreme` (`f676_010`): an object scaled to 8e-6 to hide it.
+  `geometry.winding_flipped` (`f003_001`, 120 triangles): the source mesh has every triangle against its normals;
+  100,000 others agree, so this is that mesh.
 
 ## Verification
 
@@ -161,8 +198,8 @@ All numbers are from one run on a 16 GB machine, one bundle open at a time; "pea
   only), 0 failures. 540,397 triangles, 538,893 vertices, 4,562 meshes, 334 skins, 2,849 materials, 2,032 textures and
   1,764 clips with 251,991 channels decode in 6.4 s with a peak of 301 MB. The materials use `Atlus/Atlus_CHAR` (2,826),
   `Atlus/AtlusMat` (10), `Atlus/Atlus_CHAR2` (4) and `Standard` (9); 116 have a tiled or offset `_MainTex`.
-- `check-bridge`: 234 of 234 demons load and validate as `AnimatedModel`s with textures (16 s, peak 575 MB), and all
-  1,497 field prefabs load as a static model and as a validated scene (146 s, peak 538 MB without textures): 124,356
+- `check-bridge`: 234 of 234 demons load and validate as `AnimatedModel`s with textures (20 s, peak 419 MB), and all
+  1,466 field prefabs load as a static model and as a validated scene (118 s, peak 422 MB without textures): 124,356
   meshes, 19.8 million vertices, 82,687 scene models placed by 83,344 instances.
 - **Cross-checks** against UnityPy 1.25.4, which reads the same bundles independently, for the vertex count, first vertex
   (position, normal, UV, bone weights and indices), first indices and bind pose of a skinned mesh, a bone's local

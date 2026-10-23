@@ -41,11 +41,13 @@ It reuses the existing `read_single_file`.
 File: `src/files/bundlefile/reader.rs`, function `read_single_file`.
 
 The decompressed blocks are appended to a `Vec::new()`, which grows by doubling and copies the data each
-time. For a 90 MB serialized file that means a chain of freed buffers up to the size of the file, and with
-macOS's allocator the process kept about 12 MB more resident every time the same bundle was opened and dropped
-again (a 62 MB bundle opened 12 times: 393 MB, 415, 423, ... 541 MB, peak 844 MB). Reserving
-`file.size` plus the part of the first block that precedes the file removes it (393 MB, 394 MB, ... 395 MB, peak
-463 MB). Opening every field bundle prefab by prefab (1,497 times) is the case where it matters.
+time, leaving a chain of freed buffers up to the size of the file. On macOS the process kept about 12 MB more
+resident every time the same bundle was loaded and dropped again (resident size after each of 12 loads of a
+48 MB bundle with an 88 MB serialized file: 383 MB, 415, 423, ... 541 MB, peak 844 MB). Reserving the size of
+the file plus at most one block on each side stops it (393 MB, 394 MB, ... 395 MB, peak 463 MB). Loading every
+field prefab of the game one by one (1,497 times) is where it mattered. Proposed upstream as the branch
+`bundle-reserve-read-buffer`; the other two changes are `unityfs-2019-4-header` and
+`bundle-read-at-entry-range` (see `~/contrib/rabex`).
 
 ## Not changed, but worth knowing
 

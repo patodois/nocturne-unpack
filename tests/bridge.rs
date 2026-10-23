@@ -26,7 +26,7 @@ fn lists_demons_and_field_prefabs() {
         demons, 234,
         "demons with a model (259 bundles, 25 hold only data)"
     );
-    assert!(levels > 1000, "{levels} field prefabs");
+    assert!(levels > 1000 && levels < 1497, "{levels} field prefabs");
     let first = p.list("dvl0x01").unwrap();
     assert_eq!(first.len(), 1);
     assert_eq!(first[0].id, "dvl0x01");
@@ -36,6 +36,20 @@ fn lists_demons_and_field_prefabs() {
         .unwrap()
         .iter()
         .any(|a| a.id == "f002/f002_001"));
+}
+
+#[test]
+fn prefabs_with_nothing_to_draw_are_not_listed() {
+    let Some(p) = provider() else { return };
+    // f740_001 holds transforms only. Listing it would hand out a scene with no instances.
+    assert!(p.list("f740/f740_001").unwrap().is_empty());
+    // It still loads, as an empty scene, if asked for by id
+    assert!(p.load_scene("f740/f740_001").unwrap().instances.is_empty());
+    // The listed ones that were checked have something to place
+    for id in ["f002/f002_001", "f012/f012_002", "f804/f804_060"] {
+        assert_eq!(p.list(id).unwrap().len(), 1, "{id}");
+        assert!(!p.load_scene(id).unwrap().instances.is_empty(), "{id}");
+    }
 }
 
 #[test]
