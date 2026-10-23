@@ -68,18 +68,34 @@ pub struct Rig {
 impl Rig {
     /// Reads the hierarchy below a GameObject.
     pub fn from_game_object(bundle: &Bundle, root_go: i64) -> Result<Rig> {
-        let go: GameObject = bundle.read(root_go)?;
-        let tr_id = go
-            .m_Component
-            .iter()
-            .find_map(|c| {
-                let id = c.component.local()?;
-                (bundle.class_of(id) == Some(class::TRANSFORM)).then_some(id)
-            })
-            .ok_or_else(|| anyhow!("GameObject {root_go} has no Transform"))?;
+        Self::from_game_objects(bundle, &[root_go])
+    }
+
+    /// Reads the hierarchies below several GameObjects into one rig; each is a root of it.
+    pub fn from_game_objects(bundle: &Bundle, roots: &[i64]) -> Result<Rig> {
         let mut rig = Rig::default();
-        rig.add(bundle, tr_id, None, "")?;
+        for &root_go in roots {
+            let go: GameObject = bundle.read(root_go)?;
+            let tr_id = go
+                .m_Component
+                .iter()
+                .find_map(|c| {
+                    let id = c.component.local()?;
+                    (bundle.class_of(id) == Some(class::TRANSFORM)).then_some(id)
+                })
+                .ok_or_else(|| anyhow!("GameObject {root_go} has no Transform"))?;
+            rig.add(bundle, tr_id, None, "")?;
+        }
         Ok(rig)
+    }
+
+    /// Number of components of the given classes in the rig.
+    pub fn count_components(&self, classes: &[i32]) -> usize {
+        self.nodes
+            .iter()
+            .flat_map(|n| &n.components)
+            .filter(|c| classes.contains(&c.class))
+            .count()
     }
 
     fn add(
@@ -178,6 +194,19 @@ impl Rig {
             }
         }
         out
+    }
+
+    /// Whether `ancestor` is `node` or one of its ancestors.
+    pub fn is_ancestor_or_self(&self, ancestor: usize, mut node: usize) -> bool {
+        loop {
+            if node == ancestor {
+                return true;
+            }
+            match self.nodes[node].parent {
+                Some(p) => node = p,
+                None => return false,
+            }
+        }
     }
 
     /// Whether a node and all its ancestors are active.

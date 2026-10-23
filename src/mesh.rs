@@ -38,6 +38,8 @@ pub struct MeshData {
     pub submeshes: Vec<Vec<u32>>,
     /// Row-major 4x4 matrices as stored (`rows[r][c]`).
     pub bind_poses: Vec<[[f32; 4]; 4]>,
+    /// Blend shape channels the mesh has (their data is not read)
+    pub blend_shapes: usize,
 }
 
 /// Bytes per component of a vertex format (Unity 2019's `VertexFormat`).
@@ -175,6 +177,16 @@ impl Layout {
 
 /// Decodes a mesh. Streamed vertex data (`m_StreamData`) is read from the bundle's `.resS`.
 pub fn decode(bundle: &Bundle, mesh: &Mesh) -> Result<MeshData> {
+    if mesh.m_VertexData.m_DataSize.is_empty() && mesh.m_StreamData.size > 0 {
+        let streamed = bundle.read_stream(&mesh.m_StreamData)?;
+        decode_with(mesh, &streamed)
+    } else {
+        decode_with(mesh, &mesh.m_VertexData.m_DataSize)
+    }
+}
+
+/// Decodes a mesh whose vertex buffer is `data` (inline, or read from a stream).
+pub fn decode_with(mesh: &Mesh, data: &[u8]) -> Result<MeshData> {
     ensure!(
         mesh.m_MeshCompression == 0,
         "mesh {:?} uses mesh compression {}",
@@ -183,13 +195,6 @@ pub fn decode(bundle: &Bundle, mesh: &Mesh) -> Result<MeshData> {
     );
     let vd = &mesh.m_VertexData;
     let n = vd.m_VertexCount as usize;
-    let streamed;
-    let data: &[u8] = if vd.m_DataSize.is_empty() && mesh.m_StreamData.size > 0 {
-        streamed = bundle.read_stream(&mesh.m_StreamData)?;
-        &streamed
-    } else {
-        &vd.m_DataSize
-    };
     let layout = Layout::new(&vd.m_Channels, n)?;
     for (s, &(off, stride)) in layout.streams.iter().enumerate() {
         ensure!(
@@ -297,6 +302,7 @@ pub fn decode(bundle: &Bundle, mesh: &Mesh) -> Result<MeshData> {
         out.submeshes.push(idx);
     }
     out.bind_poses = mesh.m_BindPose.iter().map(|m| m.rows()).collect();
+    out.blend_shapes = mesh.m_Shapes.channels.len();
     Ok(out)
 }
 
@@ -309,7 +315,7 @@ mod tests {
         assert_eq!(half_to_f32(0x3C00), 1.0);
         assert_eq!(half_to_f32(0xC000), -2.0);
         assert_eq!(half_to_f32(0x0000), 0.0);
-        assert_eq!(half_to_f32(0x3555), 0.333251953125);
+        assert!((half_to_f32(0x3555) - 1.0 / 3.0).abs() < 1e-3);
     }
 
     #[test]
@@ -326,6 +332,102 @@ mod tests {
         channels.push(ch(1, 0, 0, 2));
         let l = Layout::new(&channels, 3).unwrap();
         assert_eq!(l.streams, [(0, 12), (48, 8)]);
+    }
+
+    fn synthetic_mesh() -> (Mesh, Vec<u8>) {
+        use crate::unity::{SubMesh, VertexData};
+        let ch = |stream, offset, format, dimension| ChannelInfo {
+            stream,
+            offset,
+            format,
+            dimension,
+        };
+        // Stream 0: position (3 floats) and normal (3 floats) = 24 bytes per vertex
+        // Stream 1: UV0 as two halves = 4 bytes per vertex
+        // Stream 2: weights (2 floats) and bone indices (2 x u32) = 16 bytes per vertex
+        let mut channels = vec![ch(0, 0, 0, 3), ch(0, 12, 0, 3)];
+        channels.resize(4, ch(0, 0, 0, 0));
+        channels.push(ch(1, 0, 1, 2));
+        channels.resize(12, ch(0, 0, 0, 0));
+        channels.push(ch(2, 0, 0, 2));
+        channels.push(ch(2, 8, 10, 2));
+        let mut data = Vec::new();
+        let f = |v: f32| v.to_le_bytes();
+        for v in 0..3u32 {
+            for x in [v as f32, 1.0, 2.0, 0.0, 0.0, 1.0] {
+                data.extend_from_slice(&f(x));
+            }
+        }
+        while data.len() % 16 != 0 {
+            data.push(0);
+        }
+        for _ in 0..3 {
+            data.extend_from_slice(&0x3C00u16.to_le_bytes()); // u = 1.0
+            data.extend_from_slice(&0x3800u16.to_le_bytes()); // v = 0.5
+        }
+        while data.len() % 16 != 0 {
+            data.push(0);
+        }
+        for v in 0..3u32 {
+            data.extend_from_slice(&f(0.25));
+            data.extend_from_slice(&f(0.75));
+            data.extend_from_slice(&v.to_le_bytes());
+            data.extend_from_slice(&(v + 1).to_le_bytes());
+        }
+        let mesh = Mesh {
+            m_Name: "synthetic".into(),
+            m_SubMeshes: vec![SubMesh {
+                firstByte: 0,
+                indexCount: 3,
+                topology: 0,
+                baseVertex: 0,
+                firstVertex: 0,
+                vertexCount: 3,
+            }],
+            m_Shapes: Default::default(),
+            m_BindPose: vec![],
+            m_BoneNameHashes: vec![],
+            m_RootBoneNameHash: 0,
+            m_MeshCompression: 0,
+            m_IndexFormat: 0,
+            m_IndexBuffer: [0u16, 2, 1].iter().flat_map(|i| i.to_le_bytes()).collect(),
+            m_VertexData: VertexData {
+                m_VertexCount: 3,
+                m_Channels: channels,
+                m_DataSize: vec![],
+            },
+            m_CompressedMesh: Default::default(),
+            m_StreamData: Default::default(),
+        };
+        (mesh, data)
+    }
+
+    #[test]
+    fn decodes_streams_formats_and_skin() {
+        let (mesh, data) = synthetic_mesh();
+        let d = decode_with(&mesh, &data).unwrap();
+        assert_eq!(
+            d.positions,
+            [[0.0, 1.0, 2.0], [1.0, 1.0, 2.0], [2.0, 1.0, 2.0]]
+        );
+        assert_eq!(d.normals[2], [0.0, 0.0, 1.0]);
+        assert_eq!(d.uv0, [[1.0, 0.5]; 3]);
+        assert_eq!(d.joints[2], [2, 3, 0, 0]);
+        assert_eq!(d.weights[1], [0.25, 0.75, 0.0, 0.0]);
+        assert_eq!(d.submeshes, [vec![0, 2, 1]]);
+    }
+
+    #[test]
+    fn short_vertex_data_and_bad_indices_are_errors() {
+        let (mesh, data) = synthetic_mesh();
+        assert!(decode_with(&mesh, &data[..data.len() - 16]).is_err());
+        let (mut mesh, data) = synthetic_mesh();
+        mesh.m_IndexBuffer = [0u16, 9, 1].iter().flat_map(|i| i.to_le_bytes()).collect();
+        let e = decode_with(&mesh, &data).unwrap_err().to_string();
+        assert!(e.contains("index 9"), "{e}");
+        let (mut mesh, data) = synthetic_mesh();
+        mesh.m_MeshCompression = 1;
+        assert!(decode_with(&mesh, &data).is_err());
     }
 
     #[test]

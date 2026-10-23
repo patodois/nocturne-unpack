@@ -95,19 +95,43 @@ pub fn decode_pixels(format: i32, w: usize, h: usize, data: &[u8]) -> Result<Ima
         format_name(format)
     );
     let data = &data[..need];
-    let mut rgba = Vec::with_capacity(w * h * 4);
+    // Rows are written bottom to top: Unity's first row is the bottom one
+    let mut rgba = vec![0u8; w * h * 4];
+    let stride = w * 4;
+    let mut put = |y: usize, row: &mut dyn Iterator<Item = [u8; 4]>| {
+        let at = (h - 1 - y) * stride;
+        for (x, px) in row.enumerate() {
+            rgba[at + x * 4..at + x * 4 + 4].copy_from_slice(&px);
+        }
+    };
     match format {
         FMT_ALPHA8 => {
-            for &a in data {
-                rgba.extend_from_slice(&[255, 255, 255, a]);
+            for y in 0..h {
+                put(
+                    y,
+                    &mut data[y * w..(y + 1) * w].iter().map(|&a| [255, 255, 255, a]),
+                );
             }
         }
         FMT_RGB24 => {
-            for p in data.as_chunks::<3>().0 {
-                rgba.extend_from_slice(&[p[0], p[1], p[2], 255]);
+            for y in 0..h {
+                let row = &data[y * w * 3..(y + 1) * w * 3];
+                put(
+                    y,
+                    &mut row
+                        .as_chunks::<3>()
+                        .0
+                        .iter()
+                        .map(|p| [p[0], p[1], p[2], 255]),
+                );
             }
         }
-        FMT_RGBA32 => rgba.extend_from_slice(data),
+        FMT_RGBA32 => {
+            for y in 0..h {
+                let row = &data[y * stride..(y + 1) * stride];
+                put(y, &mut row.as_chunks::<4>().0.iter().copied());
+            }
+        }
         _ => {
             type Decoder = fn(&[u8], usize, usize, &mut [u32]) -> Result<(), &'static str>;
             let decode: Decoder = match format {
@@ -115,29 +139,41 @@ pub fn decode_pixels(format: i32, w: usize, h: usize, data: &[u8]) -> Result<Ima
                 FMT_DXT5 => texture2ddecoder::decode_bc3,
                 _ => texture2ddecoder::decode_bc7,
             };
-            // The decoder works on whole blocks; pad to a multiple of 4 and crop
-            let (bw, bh) = (w.div_ceil(4) * 4, h.div_ceil(4) * 4);
-            let mut pixels = vec![0u32; bw * bh];
-            decode(data, bw, bh, &mut pixels).map_err(|e| anyhow::anyhow!("{e}"))?;
-            for row in pixels.chunks_exact(bw).take(h) {
-                for p in &row[..w] {
-                    // BGRA in little-endian order
-                    let [b, g, r, a] = p.to_le_bytes();
-                    rgba.extend_from_slice(&[r, g, b, a]);
+            // The decoder works on whole blocks, so a band of block rows at a time (blocks are
+            // stored row by row) keeps the scratch buffer small for big textures
+            let block_bytes = if format == FMT_DXT1 { 8 } else { 16 };
+            let bw = w.div_ceil(4) * 4;
+            let block_rows = h.div_ceil(4);
+            const BAND: usize = 16;
+            let mut pixels = vec![0u32; bw * BAND * 4];
+            let mut r0 = 0;
+            while r0 < block_rows {
+                let rows = BAND.min(block_rows - r0);
+                let src = &data[r0 * (bw / 4) * block_bytes..(r0 + rows) * (bw / 4) * block_bytes];
+                decode(src, bw, rows * 4, &mut pixels[..bw * rows * 4])
+                    .map_err(|e| anyhow::anyhow!("{e}"))?;
+                for (i, row) in pixels[..bw * rows * 4].chunks_exact(bw).enumerate() {
+                    let y = r0 * 4 + i;
+                    if y >= h {
+                        break;
+                    }
+                    put(
+                        y,
+                        &mut row[..w].iter().map(|p| {
+                            // BGRA in little-endian order
+                            let [b, g, r, a] = p.to_le_bytes();
+                            [r, g, b, a]
+                        }),
+                    );
                 }
+                r0 += rows;
             }
         }
-    }
-    // Flip: Unity's first row is the bottom one
-    let stride = w * 4;
-    let mut flipped = Vec::with_capacity(rgba.len());
-    for row in rgba.chunks_exact(stride).rev() {
-        flipped.extend_from_slice(row);
     }
     Ok(Image {
         width: w as u32,
         height: h as u32,
-        rgba: flipped,
+        rgba,
     })
 }
 
@@ -169,6 +205,25 @@ mod tests {
         let img = decode_pixels(FMT_DXT1, 4, 4, &block).unwrap();
         assert_eq!(img.rgba.len(), 64);
         assert_eq!(&img.rgba[..4], &[255, 0, 0, 255]);
+    }
+
+    #[test]
+    fn dxt1_bands_keep_their_order() {
+        // 17 block rows (more than one band of 16): block row i is solid red (i + 1) / 32
+        let mut data = Vec::new();
+        for i in 0..17u16 {
+            let c = (i + 1) << 11;
+            data.extend_from_slice(&c.to_le_bytes());
+            data.extend_from_slice(&c.to_le_bytes());
+            data.extend_from_slice(&[0; 4]);
+        }
+        let img = decode_pixels(FMT_DXT1, 4, 68, &data).unwrap();
+        // The first row of the data is the bottom of the image
+        let red = |y: usize| img.rgba[y * 16];
+        let want = |i: u16| (((i + 1) as u32 * 255 + 15) / 31) as u8;
+        assert!(red(67).abs_diff(want(0)) <= 1);
+        assert!(red(0).abs_diff(want(16)) <= 1);
+        assert!(red(67 - 4 * 16).abs_diff(want(16)) <= 1);
     }
 
     #[test]

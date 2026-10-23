@@ -230,13 +230,6 @@ pub fn to_glb(a: &Asset) -> Result<Vec<u8>> {
                     json!(b.floats(&f, "VEC2", 2, Some(34962), false)),
                 );
             }
-            if !p.colors.is_empty() {
-                let f: Vec<f32> = p.colors.iter().flatten().copied().collect();
-                attrs.insert(
-                    "COLOR_0".into(),
-                    json!(b.floats(&f, "VEC4", 4, Some(34962), false)),
-                );
-            }
             if !p.joints.is_empty() {
                 let bytes: Vec<u8> = p
                     .joints

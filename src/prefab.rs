@@ -106,31 +106,60 @@ struct Loader<'a> {
     meshes: HashMap<i64, Rc<MeshData>>,
 }
 
-/// Loads the demon prefab of a bundle. With several prefabs, `prefab` picks one by (part of)
-/// its asset path; without it the first one is used.
-pub fn load(
-    install: &Install,
-    bundle: &Bundle,
-    prefab: Option<&str>,
-    opts: &Options,
-) -> Result<Asset> {
+/// Which prefab of a bundle to load.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Which<'a> {
+    /// The prefab with the most renderers (the first of them)
+    Main,
+    /// The first prefab whose asset path contains this text
+    Named(&'a str),
+    /// All prefabs, side by side as roots of one hierarchy
+    All,
+}
+
+/// The prefab of a bundle with the most mesh renderers (a demon bundle may also hold an
+/// afterimage or an alternate head); the first one when they tie.
+pub fn main_prefab(bundle: &Bundle, roots: &[(String, i64)]) -> Result<usize> {
+    let mut best = (0usize, 0usize);
+    for (i, (_, go)) in roots.iter().enumerate() {
+        let n = Rig::from_game_object(bundle, *go)?
+            .count_components(&[class::MESH_RENDERER, class::SKINNED_MESH_RENDERER]);
+        if i == 0 || n > best.1 {
+            best = (i, n);
+        }
+    }
+    Ok(best.0)
+}
+
+/// Loads a prefab of a bundle: a demon, or the geometry of a field.
+pub fn load(install: &Install, bundle: &Bundle, which: Which, opts: &Options) -> Result<Asset> {
     let roots = prefab_roots(bundle)?;
-    let (path, go) = match prefab {
-        Some(p) => roots
-            .iter()
-            .find(|(k, _)| k.contains(p))
-            .ok_or_else(|| anyhow!("no prefab matching {p:?}"))?,
-        None => roots
-            .first()
-            .ok_or_else(|| anyhow!("the bundle has no prefab"))?,
+    ensure!(!roots.is_empty(), "the bundle has no prefab");
+    let stem = |path: &str| {
+        path.rsplit('/')
+            .next()
+            .unwrap_or(path)
+            .trim_end_matches(".prefab")
+            .to_string()
     };
-    let rig = Rig::from_game_object(bundle, *go)?;
-    let name = path
-        .rsplit('/')
-        .next()
-        .unwrap_or(path)
-        .trim_end_matches(".prefab")
-        .to_string();
+    let (name, gos): (String, Vec<i64>) = match which {
+        Which::Main => {
+            let (path, go) = &roots[main_prefab(bundle, &roots)?];
+            (stem(path), vec![*go])
+        }
+        Which::Named(p) => {
+            let (path, go) = roots
+                .iter()
+                .find(|(k, _)| k.contains(p))
+                .ok_or_else(|| anyhow!("no prefab matching {p:?}"))?;
+            (stem(path), vec![*go])
+        }
+        Which::All => {
+            let ab: AssetBundle = bundle.read(bundle.objects_of(class::ASSET_BUNDLE)[0])?;
+            (ab.m_Name, roots.iter().map(|(_, g)| *g).collect())
+        }
+    };
+    let rig = Rig::from_game_objects(bundle, &gos)?;
     let mut l = Loader {
         install,
         bundle,
@@ -145,7 +174,7 @@ pub fn load(
     };
     l.nodes(&rig);
     l.renderers(&rig)?;
-    if opts.animations {
+    if opts.animations && gos.len() == 1 {
         l.animations(&rig)?;
     }
     Ok(l.asset)
@@ -226,28 +255,51 @@ impl Loader<'_> {
             });
         }
         let data = self.mesh(mesh_id)?;
-        let skin_index = if skinned {
-            Some(self.skin(rig, r, &data)?)
+        // A skinned renderer whose mesh has no bone weights is drawn rigid, at its node
+        let skinned = skinned && !data.joints.is_empty();
+        if !skinned && data.joints.is_empty() && r.m_RootBone.m_PathID != 0 && !r.m_Bones.is_empty()
+        {
+            self.asset
+                .report
+                .add("skinned renderer whose mesh has no bone weights (drawn rigid)");
+        }
+        let (skin_index, slot_map) = if skinned {
+            let (i, m) = self.skin(rig, r, &data)?;
+            (Some(i), m)
         } else {
-            None
+            (None, None)
         };
-        let nsub = data.submeshes.len();
-        if nsub > mats.len().max(1) {
+        // A statically batched renderer uses a range of the combined mesh's sub-meshes
+        let batch = r.m_StaticBatchInfo;
+        let (first, count) = if batch.subMeshCount > 0 {
+            self.asset
+                .report
+                .add("statically batched renderer (its range of sub-meshes is used)");
+            (batch.firstSubMesh as usize, batch.subMeshCount as usize)
+        } else {
+            (0, data.submeshes.len())
+        };
+        let last = (first + count).min(data.submeshes.len());
+        if count > mats.len().max(1) {
             self.asset
                 .report
                 .add("sub-meshes beyond the renderer's material list (use the last material)");
         }
+        if data.blend_shapes > 0 {
+            self.asset.report.add("mesh with blend shapes (not read)");
+        }
         let mut prims = Vec::new();
-        for (si, tris) in data.submeshes.iter().enumerate() {
+        for si in first..last {
+            let tris = &data.submeshes[si];
             if tris.is_empty() {
                 continue;
             }
-            let mat_slot = mats.get(si).or(mats.last()).copied().flatten();
+            let mat_slot = mats.get(si - first).or(mats.last()).copied().flatten();
             let material = match mat_slot {
                 Some(m) => m,
                 None => self.default_material(),
             };
-            let keep_colors = self.asset.materials[material].vertex_colors;
+            let reads_colors = self.asset.materials[material].vertex_colors;
             let mut remap: HashMap<u32, u32> = HashMap::new();
             let mut used: Vec<usize> = Vec::new();
             let mut idx = Vec::with_capacity(tris.len());
@@ -267,6 +319,7 @@ impl Loader<'_> {
             };
             let mut p = Primitive {
                 name: format!("{}_{si}", data.name),
+                mesh_id,
                 node: ni,
                 skin: skin_index,
                 material,
@@ -300,17 +353,20 @@ impl Loader<'_> {
                 self.asset.report.add("second UV set");
             }
             if !data.colors.is_empty() {
-                if keep_colors {
-                    p.colors = used.iter().map(|&i| data.colors[i]).collect();
+                // The Atlus shaders blend vertex colours with parameters that are not mapped, so
+                // they are not carried over
+                self.asset.report.add(if reads_colors {
+                    "vertex colours the shader reads (blend parameters not mapped)"
                 } else {
-                    self.asset
-                        .report
-                        .add("vertex colours the material does not read");
-                }
+                    "vertex colours the shader does not read"
+                });
             }
             if skinned && !data.joints.is_empty() {
                 p.joints = used.iter().map(|&i| data.joints[i]).collect();
                 p.weights = used.iter().map(|&i| data.weights[i]).collect();
+                if let Some(map) = &slot_map {
+                    merge_slots(map, &mut p.joints, &mut p.weights);
+                }
             }
             ensure!(
                 p.positions.len() == used.len(),
@@ -323,7 +379,15 @@ impl Loader<'_> {
         Ok(())
     }
 
-    fn skin(&mut self, rig: &Rig, r: &Renderer, data: &MeshData) -> Result<usize> {
+    /// Builds the skin of a renderer. glTF wants each joint once, so a bone that the renderer
+    /// lists in several slots is merged; the returned map takes a slot to its joint, when it
+    /// changes anything.
+    fn skin(
+        &mut self,
+        rig: &Rig,
+        r: &Renderer,
+        data: &MeshData,
+    ) -> Result<(usize, Option<Vec<u16>>)> {
         ensure!(
             !data.joints.is_empty(),
             "skinned mesh {:?} has no bone indices",
@@ -351,20 +415,60 @@ impl Loader<'_> {
             data.name,
             joints.len()
         );
-        let skeleton = r
+        // glTF wants the skeleton to be an ancestor of every joint
+        let mut skeleton = r
             .m_RootBone
             .local()
             .and_then(|id| rig.node_of_transform(id));
+        if let Some(root) = skeleton {
+            if !joints.iter().all(|&j| rig.is_ancestor_or_self(root, j)) {
+                self.asset
+                    .report
+                    .add("skinned renderer whose root bone is not above all its bones (skeleton omitted)");
+                skeleton = None;
+            }
+        }
+        let binds: Vec<[f32; 16]> = data
+            .bind_poses
+            .iter()
+            .map(space::matrix_to_column_major)
+            .collect();
+        let (mut unique, mut unique_binds, mut slot_map) = (Vec::new(), Vec::new(), Vec::new());
+        let mut conflict = false;
+        for (slot, &node) in joints.iter().enumerate() {
+            match unique.iter().position(|&u| u == node) {
+                Some(i) => {
+                    let same = binds[slot]
+                        .iter()
+                        .zip(&unique_binds[i] as &[f32; 16])
+                        .all(|(a, b)| (a - b).abs() < 1e-4);
+                    conflict |= !same;
+                    slot_map.push(i as u16);
+                }
+                None => {
+                    unique.push(node);
+                    unique_binds.push(binds[slot]);
+                    slot_map.push((unique.len() - 1) as u16);
+                }
+            }
+        }
+        if conflict {
+            self.asset
+                .report
+                .add("bone listed twice with different bind poses (the first is used)");
+        }
+        let remap = (unique.len() != joints.len()).then_some(slot_map);
+        if remap.is_some() {
+            self.asset
+                .report
+                .add("bone listed in several slots (merged)");
+        }
         self.asset.skins.push(Skin {
-            joints,
-            inverse_bind: data
-                .bind_poses
-                .iter()
-                .map(space::matrix_to_column_major)
-                .collect(),
+            joints: unique,
+            inverse_bind: unique_binds,
             skeleton,
         });
-        Ok(self.asset.skins.len() - 1)
+        Ok((self.asset.skins.len() - 1, remap))
     }
 
     fn default_material(&mut self) -> usize {
@@ -484,9 +588,7 @@ impl Loader<'_> {
         // Everything else the material sets
         for (k, te) in &m.m_SavedProperties.m_TexEnvs {
             if k != "_MainTex" && te.m_Texture.m_PathID != 0 {
-                self.asset
-                    .report
-                    .add(format!("{shader}: texture {k} not mapped"));
+                self.asset.report.add_unmapped(&shader, k);
             }
         }
         let (mut factor, mut metallic, mut roughness) = ([1.0f32; 4], 0.0, 1.0);
@@ -504,14 +606,10 @@ impl Loader<'_> {
             roughness = 1.0 - float("_Glossiness").unwrap_or(0.5);
         } else {
             for (k, _) in &m.m_SavedProperties.m_Colors {
-                self.asset
-                    .report
-                    .add(format!("{shader}: colour {k} not mapped"));
+                self.asset.report.add_unmapped(&shader, k);
             }
             for (k, _) in &m.m_SavedProperties.m_Floats {
-                self.asset
-                    .report
-                    .add(format!("{shader}: value {k} not mapped"));
+                self.asset.report.add_unmapped(&shader, k);
             }
         }
         let vertex_colors = has("ENABLE_VERTEXCOLOR");
@@ -565,6 +663,16 @@ impl Loader<'_> {
             "bindings own {total} curves but the clip has {}",
             curves.curves.len()
         );
+        self.asset.report.add_n(
+            "animation keys outside the clip's time range",
+            curves.trimmed_keys,
+        );
+        if curves.gaps > 0 {
+            self.asset.report.add_n(
+                "animation segments that miss the next key (reader bug?)",
+                curves.gaps,
+            );
+        }
         for (what, n) in clip::unread_bindings(&slots) {
             self.asset
                 .report
@@ -643,6 +751,23 @@ impl Loader<'_> {
     }
 }
 
+/// Renumbers bone slots to joints and adds up the weights of slots that became the same joint.
+fn merge_slots(map: &[u16], joints: &mut [[u16; 4]], weights: &mut [[f32; 4]]) {
+    for (j, w) in joints.iter_mut().zip(weights.iter_mut()) {
+        for slot in j.iter_mut() {
+            *slot = map[*slot as usize];
+        }
+        for a in 0..4 {
+            for b in a + 1..4 {
+                if j[a] == j[b] && w[b] > 0.0 {
+                    w[a] += w[b];
+                    w[b] = 0.0;
+                }
+            }
+        }
+    }
+}
+
 fn wrap(mode: i32) -> u32 {
     match mode {
         1 | 3 => 33071,
@@ -716,4 +841,76 @@ pub fn summary(a: &Asset) -> BTreeMap<&'static str, usize> {
         a.animations.iter().map(|x| x.channels.len()).sum(),
     );
     m
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::clip::{build_channel, sample_channel, Curve, Key};
+
+    /// A curve through `(time, value, slope)` points with the cubic Hermite segments between them
+    fn hermite(points: &[(f32, f32, f32)]) -> Curve {
+        let mut keys = Vec::new();
+        for w in points.windows(2) {
+            let ((t0, v0, m0), (t1, v1, m1)) = (w[0], w[1]);
+            let dt = t1 - t0;
+            keys.push(Key {
+                time: t0,
+                a: -2.0 * (v1 - v0) / dt.powi(3) + (m0 + m1) / dt.powi(2),
+                b: 3.0 * (v1 - v0) / dt.powi(2) - (2.0 * m0 + m1) / dt,
+                c: m0,
+                d: v0,
+            });
+        }
+        let (t, v, _) = *points.last().unwrap();
+        keys.push(Key::constant(t, v));
+        Curve {
+            keys,
+            initial: None,
+        }
+    }
+
+    #[test]
+    fn duplicate_bone_slots_merge() {
+        // Slots 0 and 2 are the same joint (0); slot 1 is joint 1
+        let map = [0u16, 1, 0];
+        let mut joints = [[0u16, 2, 1, 0], [2, 2, 0, 0]];
+        let mut weights = [[0.25f32, 0.5, 0.25, 0.0], [0.5, 0.5, 0.0, 0.0]];
+        merge_slots(&map, &mut joints, &mut weights);
+        assert_eq!(joints[0], [0, 0, 1, 0]);
+        assert_eq!(weights[0], [0.75, 0.0, 0.25, 0.0]);
+        assert_eq!(weights[1], [1.0, 0.0, 0.0, 0.0]);
+    }
+
+    #[test]
+    fn gltf_channel_samples_like_the_curves() {
+        // Four curves through unit quaternions at the keys, with slopes of their own
+        let comps = [
+            hermite(&[(0.0, 0.0, 0.3), (1.0, 0.2, -0.4), (2.5, 0.1, 0.0)]),
+            hermite(&[(0.0, 0.1, 0.2), (1.0, 0.3, 0.5), (2.5, 0.0, 0.1)]),
+            hermite(&[(0.0, 0.0, -0.2), (1.0, 0.5, 0.0), (2.5, 0.2, 0.2)]),
+            hermite(&[
+                (0.0, 0.9949874, 0.0),
+                (1.0, 0.7874008, 0.1),
+                (2.5, 0.9746794, 0.0),
+            ]),
+        ];
+        let refs: Vec<&Curve> = comps.iter().collect();
+        let ch = build_channel(Prop::Rotation, &refs).unwrap();
+        assert_eq!(ch.interp, Interp::Cubic);
+        let g = to_gltf_channel(3, Target::Rotation, ch.clone());
+        for t in [0.0, 0.3, 0.99, 1.0, 1.7, 2.4, 2.5, 3.0] {
+            let want = space::rotation({
+                let q = sample_channel(&ch, t);
+                [q[0], q[1], q[2], q[3]]
+            });
+            let got = g.sample(t);
+            for i in 0..4 {
+                assert!(
+                    (got[i] - want[i]).abs() < 2e-6,
+                    "t={t}: {got:?} vs {want:?}"
+                );
+            }
+        }
+    }
 }

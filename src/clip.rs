@@ -11,7 +11,7 @@
 //!
 //! - **Streamed**: a list of frames `time, key count, keys...`, a key being the curve index and
 //!   the four coefficients (`a, b, c, d`, so `d` is the value and `c` the outgoing slope). The
-//!   first frame has time -infinity and holds the value before the first key; the last has time
+//!   first frame has the lowest float as its time and holds the value before the first key; the last has time
 //!   +infinity and no keys. Only the curves that have a key at a frame's time appear in it.
 //! - **Dense**: `frame_count * curve_count` floats, frame major, one frame every
 //!   `1 / sample_rate` seconds from `begin_time`, interpolated linearly.
@@ -50,12 +50,21 @@ impl Key {
         }
     }
 
+    // Evaluated in double precision: short segments have huge coefficients that cancel
     fn at(&self, s: f32) -> f32 {
-        ((self.a * s + self.b) * s + self.c) * s + self.d
+        let (a, b, c, d, s) = (
+            self.a as f64,
+            self.b as f64,
+            self.c as f64,
+            self.d as f64,
+            s as f64,
+        );
+        (((a * s + b) * s + c) * s + d) as f32
     }
 
     fn slope_at(&self, s: f32) -> f32 {
-        (3.0 * self.a * s + 2.0 * self.b) * s + self.c
+        let (a, b, c, s) = (self.a as f64, self.b as f64, self.c as f64, s as f64);
+        ((3.0 * a * s + 2.0 * b) * s + c) as f32
     }
 
     fn is_flat(&self) -> bool {
@@ -110,6 +119,44 @@ impl Curve {
             }
             _ => false,
         }
+    }
+
+    /// Cuts the curve to `start..=stop`: the key in effect at `start` moves there (its polynomial
+    /// re-expressed from the new origin, which changes nothing) and later keys beyond `stop` go.
+    /// Returns how many keys were affected.
+    fn trim(&mut self, start: f32, stop: f32) -> usize {
+        let mut touched = 0;
+        let first_in = self.keys.partition_point(|k| k.time < start);
+        if first_in > 0 && self.keys.get(first_in).is_none_or(|k| k.time > start) {
+            // The key before `start` is in effect at `start`
+            let k = self.keys[first_in - 1];
+            let s = start - k.time;
+            let moved = Key {
+                time: start,
+                a: k.a,
+                b: 3.0 * k.a * s + k.b,
+                c: 3.0 * k.a * s * s + 2.0 * k.b * s + k.c,
+                d: k.at(s),
+            };
+            self.keys.drain(..first_in);
+            self.keys.insert(0, moved);
+            touched += first_in;
+        } else if first_in > 0 {
+            self.keys.drain(..first_in);
+            touched += first_in;
+        }
+        let end = self.keys.partition_point(|k| k.time <= stop);
+        if end < self.keys.len() {
+            touched += self.keys.len() - end;
+            self.keys.truncate(end.max(1));
+            // The last kept key's segment reaches `stop`: end the curve there with its value
+            let last = *self.keys.last().unwrap();
+            if last.time < stop {
+                self.keys
+                    .push(Key::constant(stop, last.at(stop - last.time)));
+            }
+        }
+        touched
     }
 
     /// Whether every segment is a straight line (or a hold).
@@ -177,9 +224,11 @@ pub struct ClipCurves {
     pub curves: Vec<Curve>,
     pub start: f32,
     pub stop: f32,
-    /// Keys the streamed clip gave a curve before its first real frame (value held from -inf)
-    /// that were dropped because they equal the first key.
-    pub leading_values: usize,
+    /// Smooth segments that end more than 1e-3 away from the next key's value. Zero when the
+    /// polynomial layout is read right.
+    pub gaps: usize,
+    /// Keys that lay outside `start..=stop` and were cut or moved to the range's edge
+    pub trimmed_keys: usize,
 }
 
 /// Splits a clip's three curve groups into [`Curve`]s.
@@ -196,7 +245,7 @@ pub fn read_curves(clip: &AnimationClip) -> Result<ClipCurves> {
     // Streamed
     let d = &sc.data;
     let mut i = 0;
-    let mut last_time = f32::NEG_INFINITY;
+    let mut last_time = f32::MIN;
     while i < d.len() {
         ensure!(i + 2 <= d.len(), "streamed clip ends inside a frame header");
         let time = f32::from_bits(d[i]);
@@ -207,7 +256,7 @@ pub fn read_curves(clip: &AnimationClip) -> Result<ClipCurves> {
             "streamed clip ends inside a frame of {count} keys"
         );
         ensure!(
-            time >= last_time || time.is_nan(),
+            time >= last_time,
             "streamed frame times go backwards ({last_time} then {time})"
         );
         last_time = time;
@@ -216,7 +265,7 @@ pub fn read_curves(clip: &AnimationClip) -> Result<ClipCurves> {
             ensure!(idx < n_stream, "streamed key for curve {idx} of {n_stream}");
             let f = |j: usize| f32::from_bits(d[i + k * 5 + 1 + j]);
             let (a, b, cc, dd) = (f(0), f(1), f(2), f(3));
-            if time == f32::NEG_INFINITY {
+            if time <= f32::MIN {
                 curves[idx].initial = Some(dd);
             } else if time.is_finite() {
                 curves[idx].keys.push(Key {
@@ -268,11 +317,32 @@ pub fn read_curves(clip: &AnimationClip) -> Result<ClipCurves> {
             .push(Key::constant(m.m_StartTime, v));
     }
 
+    // Consistency: a smooth segment must arrive at the next key's value
+    let mut gaps = 0;
+    for cv in &curves {
+        for w in cv.keys.windows(2) {
+            // Segments a few microseconds long have coefficients far beyond what float times
+            // can reproduce, so they are not a test of the layout
+            if !w[0].is_flat() && w[1].time - w[0].time > 1e-4 {
+                let end = w[0].at(w[1].time - w[0].time);
+                if (end - w[1].d).abs() > 1e-3 * w[1].d.abs().max(1.0) {
+                    gaps += 1;
+                }
+            }
+        }
+    }
+    // Keys outside the clip's range: the clip plays from `start` to `stop`
+    let (start, stop) = (m.m_StartTime, m.m_StopTime);
+    let mut trimmed = 0;
+    for cv in curves.iter_mut() {
+        trimmed += cv.trim(start, stop);
+    }
     Ok(ClipCurves {
         curves,
-        start: m.m_StartTime,
-        stop: m.m_StopTime,
-        leading_values: 0,
+        start,
+        stop,
+        trimmed_keys: trimmed,
+        gaps,
     })
 }
 
@@ -285,8 +355,8 @@ pub enum Interp {
 }
 
 /// One animated property of one node, ready for glTF: `values` has `comps` floats per key; for
-/// [`Interp::Cubic`] the in and out tangents (already scaled by the key interval, as glTF wants)
-/// are in `in_tangents` and `out_tangents`.
+/// [`Interp::Cubic`] the in and out tangents are in `in_tangents` and `out_tangents`, as slopes
+/// (change per second) the way glTF stores them; the player multiplies them by the key interval.
 #[derive(Clone, Debug)]
 pub struct Channel {
     pub prop: Prop,
@@ -365,11 +435,11 @@ pub fn build_channel(prop: Prop, comps: &[&Curve]) -> Result<Channel> {
     for (ci, c) in comps.iter().enumerate() {
         for (ti, &t) in times.iter().enumerate() {
             values[ti * n + ci] = c.value(t);
-            if let Some(&t1) = times.get(ti + 1) {
-                out_t[ti * n + ci] = c.slope_out(t) * (t1 - t);
+            if ti + 1 < keyframes {
+                out_t[ti * n + ci] = c.slope_out(t);
             }
-            if let Some(p) = ti.checked_sub(1) {
-                in_t[ti * n + ci] = c.slope_in(t) * (t - times[p]);
+            if ti > 0 {
+                in_t[ti * n + ci] = c.slope_in(t);
             }
         }
     }
@@ -568,13 +638,14 @@ pub fn sample_channel(ch: &Channel, t: f32) -> Vec<f32> {
         Interp::Cubic => {
             let m0 = get(&ch.out_tangents, k);
             let m1 = get(&ch.in_tangents, k + 1);
+            let dt = t1 - t0;
             let (u2, u3) = (u * u, u * u * u);
             (0..n)
                 .map(|i| {
                     (2.0 * u3 - 3.0 * u2 + 1.0) * v0[i]
-                        + (u3 - 2.0 * u2 + u) * m0[i]
+                        + (u3 - 2.0 * u2 + u) * dt * m0[i]
                         + (-2.0 * u3 + 3.0 * u2) * v1[i]
-                        + (u3 - u2) * m1[i]
+                        + (u3 - u2) * dt * m1[i]
                 })
                 .collect()
         }
@@ -675,6 +746,7 @@ pub fn unread_bindings(slots: &[Slot]) -> BTreeMap<String, usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::unity::DenseClip;
 
     fn key(time: f32, a: f32, b: f32, c: f32, d: f32) -> Key {
         Key { time, a, b, c, d }
@@ -733,6 +805,132 @@ mod tests {
         assert_eq!(sample_channel(&ch, 0.5)[0], 1.0);
     }
 
+    fn clip_with(
+        streamed: Vec<u32>,
+        curves: u32,
+        dense: DenseClip,
+        constant: Vec<f32>,
+    ) -> AnimationClip {
+        use crate::unity::{
+            ClipBindingConstant, ClipMuscleConstant, ConstantClip, OffsetPtrClip, StreamedClip,
+        };
+        AnimationClip {
+            m_Name: "t".into(),
+            m_Legacy: false,
+            m_Compressed: false,
+            m_RotationCurves: vec![],
+            m_CompressedRotationCurves: vec![],
+            m_EulerCurves: vec![],
+            m_PositionCurves: vec![],
+            m_ScaleCurves: vec![],
+            m_FloatCurves: vec![],
+            m_SampleRate: 30.0,
+            m_WrapMode: 0,
+            m_MuscleClip: ClipMuscleConstant {
+                m_Clip: OffsetPtrClip {
+                    data: crate::unity::Clip {
+                        m_StreamedClip: StreamedClip {
+                            data: streamed,
+                            curveCount: curves,
+                        },
+                        m_DenseClip: dense,
+                        m_ConstantClip: ConstantClip { data: constant },
+                    },
+                },
+                m_StartTime: 0.0,
+                m_StopTime: 1.0,
+                m_LoopTime: false,
+            },
+            m_ClipBindingConstant: ClipBindingConstant::default(),
+        }
+    }
+
+    fn frame(time: f32, keys: &[(u32, [f32; 4])]) -> Vec<u32> {
+        let mut v = vec![time.to_bits(), keys.len() as u32];
+        for (c, co) in keys {
+            v.push(*c);
+            v.extend(co.iter().map(|x| x.to_bits()));
+        }
+        v
+    }
+
+    #[test]
+    fn reads_streamed_dense_and_constant_curves() {
+        let mut data = Vec::new();
+        // The leading frame (the lowest float) holds the value before the first key
+        data.extend(frame(
+            f32::MIN,
+            &[(0, [0.0, 0.0, 0.0, 5.0]), (1, [0.0, 0.0, 0.0, 6.0])],
+        ));
+        // Curve 0: p(s) = 2 s^3 - 3 s^2 + 1, from 1 at t=0 to 0 at t=1; curve 1: constant 6 then 7
+        data.extend(frame(
+            0.0,
+            &[(0, [2.0, -3.0, 0.0, 1.0]), (1, [0.0, 0.0, 0.0, 6.0])],
+        ));
+        data.extend(frame(
+            1.0,
+            &[(0, [0.0, 0.0, 0.0, 0.0]), (1, [0.0, 0.0, 0.0, 7.0])],
+        ));
+        data.extend(frame(f32::INFINITY, &[]));
+        let dense = DenseClip {
+            m_FrameCount: 3,
+            m_CurveCount: 1,
+            m_SampleRate: 2.0,
+            m_BeginTime: 0.0,
+            m_SampleArray: vec![0.0, 1.0, 4.0],
+        };
+        let c = clip_with(data, 2, dense, vec![9.0]);
+        let cc = read_curves(&c).unwrap();
+        assert_eq!(cc.curves.len(), 4);
+        assert_eq!(cc.gaps, 0);
+        // Curve 0 reproduces the polynomial; the leading value is kept apart
+        assert_eq!(cc.curves[0].initial, Some(5.0));
+        assert_eq!(cc.curves[0].keys.len(), 2);
+        assert!((cc.curves[0].value(0.5) - 0.5).abs() < 1e-6);
+        assert_eq!(cc.curves[0].value(1.0), 0.0);
+        // Curve 1 holds 6 until its key at 1.0, where it jumps to 7
+        assert_eq!(cc.curves[1].value(0.999), 6.0);
+        assert!(cc.curves[1].stepped_after(0.0));
+        // Dense: three frames half a second apart, read linearly
+        assert_eq!(cc.curves[2].value(0.25), 0.5);
+        assert_eq!(cc.curves[2].value(0.75), 2.5);
+        // Constant
+        assert_eq!(cc.curves[3].value(0.4), 9.0);
+    }
+
+    #[test]
+    fn malformed_streams_are_errors() {
+        // A frame announcing two keys but holding one
+        let mut data = frame(0.0, &[(0, [0.0; 4])]);
+        data[1] = 2;
+        let c = clip_with(data, 1, DenseClip::default(), vec![]);
+        assert!(read_curves(&c).is_err());
+        // A key for a curve that does not exist
+        let c = clip_with(
+            frame(0.0, &[(3, [0.0; 4])]),
+            1,
+            DenseClip::default(),
+            vec![],
+        );
+        assert!(read_curves(&c).is_err());
+    }
+
+    #[test]
+    fn keys_before_the_start_move_to_it() {
+        // p(s) = s on [-1, 3]: the key at -1 is in effect at the start (0) with value 1
+        let mut c = Curve {
+            keys: vec![key(-1.0, 0.0, 0.0, 1.0, 0.0), key(3.0, 0.0, 0.0, 0.0, 4.0)],
+            initial: None,
+        };
+        assert_eq!(c.trim(0.0, 2.0), 1 + 1);
+        assert_eq!(c.keys[0].time, 0.0);
+        assert_eq!(c.keys[0].d, 1.0);
+        assert_eq!(c.value(1.5), 2.5);
+        // The curve ends at the clip's stop time with the value it reaches there
+        assert_eq!(c.keys.len(), 2);
+        assert_eq!((c.keys[1].time, c.keys[1].d), (2.0, 3.0));
+    }
+
     #[test]
     fn bindings_own_runs_of_curves() {
         let b = |attr| GenericBinding {
@@ -758,7 +956,8 @@ mod tests {
         let zxy = euler_order(4).unwrap();
         // 90 degrees about Y alone
         let q = euler_to_quaternion([0.0, 90.0, 0.0], zxy);
-        assert!((q[1] - 0.70710678).abs() < 1e-6 && (q[3] - 0.70710678).abs() < 1e-6);
+        let r = std::f32::consts::FRAC_1_SQRT_2;
+        assert!((q[1] - r).abs() < 1e-6 && (q[3] - r).abs() < 1e-6);
         // ZXY applies Z first: +X turned 90 about Z becomes +Y, which a 90 turn about Y leaves alone
         let v = rotate(euler_to_quaternion([0.0, 90.0, 90.0], zxy), [1.0, 0.0, 0.0]);
         assert!(

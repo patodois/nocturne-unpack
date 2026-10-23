@@ -79,6 +79,12 @@ pub struct MeshFilter {
     pub m_Mesh: PPtr,
 }
 
+#[derive(Clone, Copy, Debug, Default, Deserialize)]
+pub struct StaticBatchInfo {
+    pub firstSubMesh: u16,
+    pub subMeshCount: u16,
+}
+
 /// MeshRenderer and SkinnedMeshRenderer share these fields; the skinned one adds the rest.
 #[derive(Debug, Deserialize)]
 pub struct Renderer {
@@ -86,6 +92,8 @@ pub struct Renderer {
     #[serde(default)]
     pub m_Enabled: bool,
     pub m_Materials: Vec<PPtr>,
+    #[serde(default)]
+    pub m_StaticBatchInfo: StaticBatchInfo,
     #[serde(default)]
     pub m_Mesh: PPtr,
     #[serde(default)]
@@ -180,10 +188,16 @@ pub struct CompressedMesh {
     pub m_UVInfo: u32,
 }
 
+#[derive(Debug, Default, Deserialize)]
+pub struct BlendShapeData {
+    pub channels: Vec<serde::de::IgnoredAny>,
+}
+
 #[derive(Debug, Deserialize)]
 pub struct Mesh {
     pub m_Name: String,
     pub m_SubMeshes: Vec<SubMesh>,
+    pub m_Shapes: BlendShapeData,
     pub m_BindPose: Vec<Matrix4x4>,
     pub m_BoneNameHashes: Vec<u32>,
     pub m_RootBoneNameHash: u32,
@@ -359,4 +373,46 @@ pub struct AssetBundle {
     pub m_Name: String,
     pub m_Container: Vec<(String, AssetInfo)>,
     pub m_Dependencies: Vec<String>,
+}
+
+/// Bytes that the type tree stores as a `string` (which need not be UTF-8).
+#[derive(Debug, Default)]
+pub struct Bytes(pub Vec<u8>);
+
+impl<'de> Deserialize<'de> for Bytes {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        struct V;
+        impl<'de> serde::de::Visitor<'de> for V {
+            type Value = Bytes;
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str("a string or bytes")
+            }
+            fn visit_str<E>(self, v: &str) -> Result<Bytes, E> {
+                Ok(Bytes(v.as_bytes().to_vec()))
+            }
+            fn visit_string<E>(self, v: String) -> Result<Bytes, E> {
+                Ok(Bytes(v.into_bytes()))
+            }
+            fn visit_bytes<E>(self, v: &[u8]) -> Result<Bytes, E> {
+                Ok(Bytes(v.to_vec()))
+            }
+            fn visit_byte_buf<E>(self, v: Vec<u8>) -> Result<Bytes, E> {
+                Ok(Bytes(v))
+            }
+            fn visit_seq<A: serde::de::SeqAccess<'de>>(self, mut a: A) -> Result<Bytes, A::Error> {
+                let mut v = Vec::new();
+                while let Some(b) = a.next_element::<u8>()? {
+                    v.push(b);
+                }
+                Ok(Bytes(v))
+            }
+        }
+        d.deserialize_string(V)
+    }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct TextAsset {
+    pub m_Name: String,
+    pub m_Script: Bytes,
 }

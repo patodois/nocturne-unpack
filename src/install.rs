@@ -117,6 +117,22 @@ impl Install {
         v
     }
 
+    /// Field bundles (`f001`, `f012`, `f015m`, ...) of the base game and the DLC, sorted by name.
+    pub fn field_bundles(&self) -> Vec<PathBuf> {
+        let mut v: Vec<PathBuf> = self
+            .base_bundles()
+            .into_iter()
+            .chain(self.dlc_bundles())
+            .filter(|p| {
+                p.file_name().and_then(|n| n.to_str()).is_some_and(|n| {
+                    n.len() > 1 && n.starts_with('f') && n.as_bytes()[1].is_ascii_digit()
+                })
+            })
+            .collect();
+        v.sort_by_key(|p| p.file_name().map(|n| n.to_os_string()));
+        v
+    }
+
     /// The file of a bundle by name, looking in the base game first and then the DLC.
     pub fn bundle_path(&self, name: &str) -> Option<PathBuf> {
         let p = self.pc.join(name);
