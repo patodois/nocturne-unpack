@@ -2,10 +2,22 @@
 
 `nocturne-unpack` reads UnityFS bundles with [rabex](https://github.com/jakobhellermann/RustyAssetBundleEXtractor)
 0.2.1 (MIT OR Apache-2.0). That release cannot open the bundles of this game (Unity 2019.4, bundle
-format version 6), so `vendor/rabex` is a copy of 0.2.1 with three small changes, wired in through
-`[patch.crates-io]`. The same changes are in `patches/rabex-0.2.1.patch` (a `diff -ru` of `src/`,
-`-p1` applies it to a checkout of the crate). With them all 2,251 base-game bundles and the DLC
-bundles open and decode.
+format version 6), so `Cargo.toml` depends on the branch `nocturne` of our fork,
+[patodois/RustyAssetBundleEXtractor](https://github.com/patodois/RustyAssetBundleEXtractor): rabex 0.2.1
+plus three small changes, one commit each on top of upstream's `main` (e9bd237, `release v0.2.1`), merged by
+that branch. It is a git dependency and not a `[patch]` section, because Cargo applies `[patch]` only in the
+root of a build, so a crate that depends on this one would have got the unpatched rabex and failed to compile.
+The changes are proposed upstream as
+[jakobhellermann/RustyAssetBundleEXtractor#1](https://github.com/jakobhellermann/RustyAssetBundleEXtractor/pull/1);
+when they are released, the dependency goes back to a version number. With them all 2,251 base-game
+bundles and the DLC bundles open and decode.
+
+| fork branch | change |
+|---|---|
+| `unityfs-2019-4-header` | section 1 |
+| `bundle-read-at-entry-range` | section 2 |
+| `bundle-reserve-read-buffer` | section 3 |
+| `nocturne` | the three merged: what this crate builds against |
 
 ## 1. UnityFS header: no extra byte, and 2019.4 block-info padding
 
@@ -45,9 +57,12 @@ time, leaving a chain of freed buffers up to the size of the file. On macOS the 
 resident every time the same bundle was loaded and dropped again (resident size after each of 12 loads of a
 48 MB bundle with an 88 MB serialized file: 383 MB, 415, 423, ... 541 MB, peak 844 MB). Reserving the size of
 the file plus at most one block on each side stops it (393 MB, 394 MB, ... 395 MB, peak 463 MB). Loading every
-field prefab of the game one by one (1,497 times) is where it mattered. Proposed upstream as the branch
-`bundle-reserve-read-buffer`; the other two changes are `unityfs-2019-4-header` and
-`bundle-read-at-entry-range` (see `~/contrib/rabex`).
+field prefab of the game one by one (1,497 times) is where it mattered.
+
+The directory of a bundle is data from the file, so the reservation is also bounded by what the remaining
+blocks can decompress to and by 256 MiB (`try_reserve_exact`, so a failed reservation falls back to the usual
+growth). With the first version a bundle whose directory claims a file of 2^60 bytes aborted the process with a
+failed allocation; the fork's `tests/bundle_read_files.rs` has that case.
 
 ## Not changed, but worth knowing
 

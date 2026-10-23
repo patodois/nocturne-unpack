@@ -10,8 +10,11 @@ readme = "README.md"
 anyhow = "1"
 clap = { version = "4", features = ["derive", "env"] }
 memmap2 = "0.9"
-# Reads UnityFS bundles and deserializes objects through their type trees. Patched, see NOTES-upstream.md
-rabex = { version = "0.2.1", default-features = false, features = ["compression-lz4", "compression-lzma"] }
+# Reads UnityFS bundles and deserializes objects through their type trees. rabex 0.2.1 plus three small
+# fixes (Unity 2019.4 headers, ranged reads, a bounded read buffer) that are not in a release yet: our fork's
+# branch `nocturne` merges them (see NOTES-upstream.md). A git dependency, so it also works for crates that
+# depend on this one, which a [patch] section would not.
+rabex = { git = "https://github.com/patodois/RustyAssetBundleEXtractor", branch = "nocturne", default-features = false, features = ["compression-lz4", "compression-lzma"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
 texture2ddecoder = "0.1.2"
@@ -25,11 +28,6 @@ libc = "0.2"
 
 [features]
 bridge = ["dep:rewrite-bridge"]
-
-# rabex 0.2.1 reads UnityFS bundles of Unity 2019.4 one byte late; the copy in vendor/rabex fixes that
-# and adds a ranged read for .resS streams (see NOTES-upstream.md)
-[patch.crates-io]
-rabex = { path = "vendor/rabex" }
 
 # Decoding is slow without optimisations; keep our own code debuggable
 [profile.dev.package."*"]
