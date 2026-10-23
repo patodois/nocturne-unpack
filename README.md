@@ -84,18 +84,20 @@ NOCTURNE_GAME_DIR=~/Games/smt3hd cargo test --release
 The bundles are read with [rabex](https://github.com/jakobhellermann/RustyAssetBundleEXtractor) 0.2.1, which reads
 UnityFS bundles and serialized files and deserializes objects through type trees. It could not open these bundles as
 released, because Unity 2019.4 writes version 6 bundles and rabex read their header one byte late. `vendor/rabex` is
-rabex 0.2.1 with two small changes (a patch for upstream is in `patches/`, the story is in `NOTES-upstream.md`):
+rabex 0.2.1 with three small changes (a patch for upstream is in `patches/`, the story is in `NOTES-upstream.md`):
 
 - no extra byte after the header flags for UnityFS, and the 2019.4 block-info alignment done the way AssetStudio does it
 - `read_at_entry_range`, which decompresses only the blocks that cover a range of a bundle entry, for `.resS` streams
+- the buffer of a file read from a bundle is reserved up front, which stopped the process from growing by about 12 MB
+  every time the same bundle was opened and dropped again
 
 With that, all 3,088 bundles (2,251 in the base game, 837 in the DLC folders) open, and every object decodes through the
 type tree stored in its own bundle. No field layout is hardcoded for the Unity version.
 
 ## What a demon holds
 
-A `dvl0x..` bundle holds one prefab (a few also hold an afterimage or an alternate head; the one with the most renderers
-is the default) and everything it uses:
+A `dvl0x..` bundle holds one prefab (four also hold a second one: an afterimage, an older or an alternate version; the one
+with the most renderers is the default) and everything it uses:
 
 - the GameObject / Transform hierarchy, with rigid meshes (`MeshFilter` + `MeshRenderer`) on many bones and a few
   `SkinnedMeshRenderer`s
@@ -108,7 +110,7 @@ is the default) and everything it uses:
 ### Conversion
 
 - x is negated to turn Unity's left-handed space into glTF's right-handed one (positions, normals, tangents, bind poses,
-  rotations as `x, -y, -z, w`, and the winding of triangles), so demons face +z. Units stay Unity's, which are metres.
+  rotations as `x, -y, -z, w`, and the winding of triangles), so demons face +z. Units stay Unity's, taken as metres.
   UVs are flipped to start at the top of the image, which is also how the textures are written.
 - Vertex channels are read with the stream layout the mesh states (stream offsets rounded to 16 bytes, channel formats
   and dimensions from `m_VertexData`): position, normal, tangent, colour, two UV sets, blend weights and indices. A mesh
@@ -177,7 +179,6 @@ All numbers are from one run on a 16 GB machine, one bundle open at a time; "pea
 - `cargo test --release` with `NOCTURNE_GAME_DIR` set: 31 unit tests, 6 tests against the install and 4 against the
   install through the bridge; without it only the unit tests run. `cargo clippy --all-targets -- -D warnings` is clean,
   with and without the `bridge` feature.
-
 
 ## Format notes
 
@@ -267,7 +268,7 @@ properties.
 ## Credits
 
 - [rabex](https://github.com/jakobhellermann/RustyAssetBundleEXtractor) by Rudolf Kolbe and Jakob Hellermann (MIT or
-  Apache-2.0): bundle and serialized file parsing, type tree deserialization. Vendored with the two changes above.
+  Apache-2.0): bundle and serialized file parsing, type tree deserialization. Vendored with the three changes above.
 - [AssetStudio](https://github.com/Perfare/AssetStudio) and [AssetRipper](https://github.com/AssetRipper/AssetRipper)
   (both MIT): their public readers were the reference for the semantics of the streamed clip format, generic bindings,
   vertex stream layout and the 2019.4 bundle header. No code was copied.
