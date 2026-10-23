@@ -20,6 +20,9 @@ struct Cli {
     /// Name every material property that is not carried over
     #[arg(short, long, global = true)]
     verbose: bool,
+    /// The game folder (the one that holds `smt3hd_Data`), before or after the command
+    #[arg(long, global = true, env = GAME_DIR_ENV, default_value = DEFAULT_GAME_DIR)]
+    game: PathBuf,
     #[command(subcommand)]
     command: Command,
 }
@@ -33,8 +36,6 @@ enum Command {
         /// Only bundles whose name contains this text (with `demons` or `fields`)
         #[arg(long)]
         filter: Option<String>,
-        #[arg(long, env = GAME_DIR_ENV, default_value = DEFAULT_GAME_DIR)]
-        game: PathBuf,
     },
     /// Export a demon bundle (e.g. dvl0x01) as a skinned, textured .glb with its animation clips
     Export {
@@ -52,13 +53,9 @@ enum Command {
         no_textures: bool,
         #[arg(long)]
         no_animations: bool,
-        #[arg(long, env = GAME_DIR_ENV, default_value = DEFAULT_GAME_DIR)]
-        game: PathBuf,
     },
     /// Load every demon bundle and count failures
     Check {
-        #[arg(long, env = GAME_DIR_ENV, default_value = DEFAULT_GAME_DIR)]
-        game: PathBuf,
         /// Only bundles whose name contains this text
         #[arg(long)]
         only: Option<String>,
@@ -71,8 +68,6 @@ enum Command {
     },
     /// Object classes, texture formats and the like across all bundles
     Census {
-        #[arg(long, env = GAME_DIR_ENV, default_value = DEFAULT_GAME_DIR)]
-        game: PathBuf,
         /// Only bundles whose name contains this text
         #[arg(long)]
         only: Option<String>,
@@ -84,8 +79,6 @@ enum Command {
     /// (feature `bridge`)
     #[cfg(feature = "bridge")]
     CheckBridge {
-        #[arg(long, env = GAME_DIR_ENV, default_value = DEFAULT_GAME_DIR)]
-        game: PathBuf,
         /// Only assets whose id or name contains this text
         #[arg(long)]
         only: Option<String>,
@@ -111,8 +104,6 @@ enum Command {
         clip: Option<String>,
         #[arg(long, default_value_t = 0.0)]
         time: f32,
-        #[arg(long, env = GAME_DIR_ENV, default_value = DEFAULT_GAME_DIR)]
-        game: PathBuf,
     },
     /// Check the provider's output against the bridge's conventions (feature `bridge`). Takes the
     /// options of `rewrite_bridge::conformance::cli` (`--id`, `--filter`, `--kind`, `--limit`,
@@ -123,11 +114,7 @@ enum Command {
         args: Vec<String>,
     },
     /// Diagnostics for the clips of a demon bundle
-    Anim {
-        bundle: String,
-        #[arg(long, env = GAME_DIR_ENV, default_value = DEFAULT_GAME_DIR)]
-        game: PathBuf,
-    },
+    Anim { bundle: String },
     /// Write one texture of a bundle as PNG (the largest level), or list the textures
     Texture {
         bundle: String,
@@ -136,8 +123,6 @@ enum Command {
         /// Output PNG
         #[arg(short, long)]
         out: Option<PathBuf>,
-        #[arg(long, env = GAME_DIR_ENV, default_value = DEFAULT_GAME_DIR)]
-        game: PathBuf,
     },
     /// Print the objects of one class of a bundle as JSON (for exploring)
     Dump {
@@ -148,8 +133,6 @@ enum Command {
         /// Print the type tree first
         #[arg(long)]
         tree: bool,
-        #[arg(long, env = GAME_DIR_ENV, default_value = DEFAULT_GAME_DIR)]
-        game: PathBuf,
     },
 }
 
@@ -185,11 +168,23 @@ fn rss_mb() -> f64 {
     0.0
 }
 
+/// Rust ignores SIGPIPE, so `println!` panics when the reader of a pipe goes away
+/// (`dump --tree | head`). Back to the default, the process just ends, as it does for `cat`.
+fn reset_sigpipe() {
+    #[cfg(unix)]
+    // SAFETY: setting the default disposition of a signal calls no Rust code
+    unsafe {
+        libc::signal(libc::SIGPIPE, libc::SIG_DFL);
+    }
+}
+
 fn main() -> Result<()> {
+    reset_sigpipe();
     let cli = Cli::parse();
     let verbose = cli.verbose;
+    let game = cli.game;
     match cli.command {
-        Command::List { what, filter, game } => list(&game, what.as_deref(), filter.as_deref())?,
+        Command::List { what, filter } => list(&game, what.as_deref(), filter.as_deref())?,
         Command::Export {
             bundle,
             out,
@@ -197,7 +192,6 @@ fn main() -> Result<()> {
             all_prefabs,
             no_textures,
             no_animations,
-            game,
         } => {
             let install = Install::open(&game)?;
             let path = install.resolve(&bundle)?;
@@ -224,7 +218,6 @@ fn main() -> Result<()> {
             print_report(&asset.report, verbose);
         }
         Command::Check {
-            game,
             only,
             kind,
             no_textures,
@@ -312,20 +305,17 @@ fn main() -> Result<()> {
                 std::process::exit(1);
             }
         }
-        Command::Census { game, only, decode } => census(&game, only.as_deref(), decode)?,
+        Command::Census { only, decode } => census(&game, only.as_deref(), decode)?,
         #[cfg(feature = "bridge")]
         Command::CheckBridge {
-            game,
             only,
             kind,
             textures,
         } => check_bridge(&game, only.as_deref(), &kind, textures)?,
         #[cfg(feature = "bridge")]
         Command::CheckConformance { args } => {
-            let default_game = std::env::var_os(GAME_DIR_ENV)
-                .filter(|v| !v.is_empty())
-                .map_or_else(|| PathBuf::from(DEFAULT_GAME_DIR), PathBuf::from);
-            let (mut game, mut textures) = (default_game, true);
+            // `--game` before the command is the global one; the checker's own options come after
+            let (mut game, mut textures) = (game, true);
             let mut rest = Vec::new();
             let mut it = args.into_iter();
             while let Some(a) = it.next() {
@@ -344,21 +334,16 @@ fn main() -> Result<()> {
             node,
             clip,
             time,
-            game,
         } => probe(&game, &bundle, mesh, node, clip, time)?,
-        Command::Anim { bundle, game } => anim_diag(&game, &bundle)?,
-        Command::Texture {
-            bundle,
-            name,
-            out,
-            game,
-        } => texture_cmd(&game, &bundle, name.as_deref(), out.as_deref())?,
+        Command::Anim { bundle } => anim_diag(&game, &bundle)?,
+        Command::Texture { bundle, name, out } => {
+            texture_cmd(&game, &bundle, name.as_deref(), out.as_deref())?
+        }
         Command::Dump {
             bundle,
             class,
             nth,
             tree,
-            game,
         } => {
             let install = Install::open(&game)?;
             let b = Bundle::open(&install.resolve(&bundle)?)?;
@@ -540,7 +525,7 @@ fn anim_diag(game: &std::path::Path, bundle: &str) -> Result<()> {
                 .cloned()
                 .unwrap_or_else(|| format!("hash {}", s.binding.path));
             let ch = if prop == clip::Prop::Euler {
-                clip::build_euler_channel(&comps, clip::euler_order(s.binding.customType).unwrap())?
+                clip::build_euler_channel(&comps, clip::euler_order_of(s.binding.customType)?)?
             } else {
                 clip::build_channel(prop, &comps)?
             };
@@ -773,17 +758,22 @@ fn probe(
                 .map(|k| &cc.curves[s.first_curve + k])
                 .collect();
             let ch = if prop == clip::Prop::Euler {
-                let order = clip::euler_order(s.binding.customType).unwrap();
+                let order = clip::euler_order_of(s.binding.customType)?;
                 clip::build_euler_channel(&comps, order)?
             } else {
                 clip::build_channel(prop, &comps)?
             };
             // The curves' polynomials evaluated directly, and the channel as glTF samples it
             let direct: Vec<f32> = comps.iter().map(|c| c.value(time)).collect();
-            let euler_q = (prop == clip::Prop::Euler).then(|| {
-                let order = clip::euler_order(s.binding.customType).unwrap();
-                clip::euler_to_quaternion([direct[0], direct[1], direct[2]], order)
-            });
+            let euler_q = if prop == clip::Prop::Euler {
+                let order = clip::euler_order_of(s.binding.customType)?;
+                Some(clip::euler_to_quaternion(
+                    [direct[0], direct[1], direct[2]],
+                    order,
+                ))
+            } else {
+                None
+            };
             println!(
                 "{}",
                 json!({"clip": cn, "prop": format!("{prop:?}"), "time": time, "unity_direct_components": direct, "unity_euler_quaternion": euler_q, "unity_channel_sample": clip::sample_channel(&ch, time), "keys": ch.times.len(), "custom_type": s.binding.customType})
@@ -1048,4 +1038,78 @@ fn texture_cmd(
         anyhow::bail!("no texture named {n:?} in {bundle}");
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn game_of(args: &[&str]) -> PathBuf {
+        Cli::try_parse_from(args).unwrap().game
+    }
+
+    #[test]
+    fn game_goes_before_or_after_the_command() {
+        let want = PathBuf::from("/games/smt");
+        for args in [
+            &["nocturne-unpack", "--game", "/games/smt", "check"][..],
+            &["nocturne-unpack", "check", "--game", "/games/smt"][..],
+            &["nocturne-unpack", "list", "demons", "--game", "/games/smt"][..],
+            &[
+                "nocturne-unpack",
+                "dump",
+                "dvl0x01",
+                "74",
+                "--tree",
+                "--game",
+                "/games/smt",
+            ][..],
+            &["nocturne-unpack", "--game=/games/smt", "census", "--decode"][..],
+        ] {
+            assert_eq!(game_of(args), want, "{args:?}");
+        }
+    }
+
+    #[cfg(feature = "bridge")]
+    #[test]
+    fn check_conformance_keeps_its_own_options() {
+        // Everything after the command is the checker's, but --game still reaches the global
+        for args in [
+            &[
+                "nocturne-unpack",
+                "--game",
+                "/g",
+                "check-conformance",
+                "--kind",
+                "level",
+            ][..],
+            &[
+                "nocturne-unpack",
+                "check-conformance",
+                "--kind",
+                "level",
+                "--game",
+                "/g",
+            ][..],
+            &[
+                "nocturne-unpack",
+                "check-conformance",
+                "--game",
+                "/g",
+                "--kind",
+                "level",
+            ][..],
+        ] {
+            let cli = Cli::try_parse_from(args).unwrap();
+            let Command::CheckConformance { args: rest } = cli.command else {
+                panic!("{args:?}")
+            };
+            // The checker's own options reach it, and the folder is found by the global option or
+            // by the manual scan of `rest`
+            assert!(rest.iter().any(|a| a == "--kind") && rest.iter().any(|a| a == "level"));
+            assert!(
+                cli.game.as_path() == std::path::Path::new("/g") || rest.iter().any(|a| a == "/g")
+            );
+        }
+    }
 }

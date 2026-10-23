@@ -151,6 +151,7 @@ pub enum Which<'a> {
 /// The prefab of a bundle with the most mesh renderers (a demon bundle may also hold an
 /// afterimage or an alternate head); the first one when they tie.
 pub fn main_prefab(bundle: &Bundle, roots: &[(String, i64)]) -> Result<usize> {
+    ensure!(!roots.is_empty(), "the bundle has no prefab");
     let mut best = (0usize, 0usize);
     for (i, (_, go)) in roots.iter().enumerate() {
         let n = Rig::from_game_object(bundle, *go)?
@@ -300,7 +301,11 @@ impl Loader<'_> {
         } else {
             (None, None)
         };
-        // A statically batched renderer uses a range of the combined mesh's sub-meshes
+        // A statically batched renderer uses a range of the combined mesh's sub-meshes. Unity bakes
+        // the renderer's world transform into such a mesh's vertices, so placing the range at the
+        // renderer's node as well would transform it twice. This install has none: none of its
+        // 99,271 renderers (demons and fields, `m_StaticBatchInfo.subMeshCount` is 0 in all) is
+        // batched, so the range is read as stored and the case is reported if it ever shows up.
         let batch = r.m_StaticBatchInfo;
         let (first, count) = if batch.subMeshCount > 0 {
             self.asset

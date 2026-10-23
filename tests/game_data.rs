@@ -1,7 +1,7 @@
 //! Tests against a real install. Skipped unless `NOCTURNE_GAME_DIR` points at the game folder (the
 //! one holding `smt3hd_Data`), e.g. `NOCTURNE_GAME_DIR=~/Games/smt3hd cargo test --release`.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use nocturne_unpack::bundle::{class, Bundle};
 use nocturne_unpack::clip;
@@ -164,4 +164,86 @@ fn every_demon_loads() {
         loaded += 1;
     }
     assert!(loaded >= 230, "{loaded} demons");
+}
+
+// The command line, as a user runs it
+
+use std::io::{BufRead, BufReader};
+use std::process::{Command, Stdio};
+
+fn cli(game: &std::path::Path) -> Command {
+    let mut c = Command::new(env!("CARGO_BIN_EXE_nocturne-unpack"));
+    c.env("NOCTURNE_GAME_DIR", game)
+        .env_remove("RUST_BACKTRACE");
+    c
+}
+
+fn game_dir() -> Option<PathBuf> {
+    PathBuf::from(std::env::var_os("NOCTURNE_GAME_DIR")?).into()
+}
+
+#[test]
+fn a_closed_pipe_ends_the_command_quietly() {
+    // `dump --tree | head`: the reader goes away after the first line of 50,000
+    let Some(game) = game_dir() else { return };
+    let mut child = cli(&game)
+        .args(["dump", "dvl0x01", "74", "--nth", "0", "--tree"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut first = String::new();
+    BufReader::new(child.stdout.take().unwrap())
+        .read_line(&mut first)
+        .unwrap();
+    assert!(!first.is_empty());
+    let out = child.wait_with_output().unwrap();
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(!err.contains("panicked"), "{err}");
+    assert!(!err.contains("Broken pipe"), "{err}");
+}
+
+#[test]
+fn game_is_accepted_before_and_after_the_command() {
+    let Some(game) = game_dir() else { return };
+    let before = cli(Path::new("/nonexistent"))
+        .arg("--game")
+        .arg(&game)
+        .args(["list", "demons", "--filter", "dvl0x01"])
+        .output()
+        .unwrap();
+    let after = cli(Path::new("/nonexistent"))
+        .args(["list", "demons", "--filter", "dvl0x01", "--game"])
+        .arg(&game)
+        .output()
+        .unwrap();
+    assert!(
+        before.status.success(),
+        "{}",
+        String::from_utf8_lossy(&before.stderr)
+    );
+    assert_eq!(before.stdout, after.stdout);
+    assert!(String::from_utf8_lossy(&before.stdout).contains("dvl0x01"));
+}
+
+#[test]
+fn a_bundle_without_a_prefab_is_an_error_not_a_panic() {
+    let Some(game) = game_dir() else { return };
+    let install = Install::open(&game).unwrap();
+    // 25 demon bundles hold only a data table and sounds
+    let data_only = install
+        .demon_bundles()
+        .into_iter()
+        .find(|p| {
+            Bundle::open(p)
+                .and_then(|b| prefab::prefab_roots(&b))
+                .is_ok_and(|r| r.is_empty())
+        })
+        .expect("a demon bundle without a prefab");
+    for args in [["anim"], ["probe"]] {
+        let out = cli(&game).args(args).arg(&data_only).output().unwrap();
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert_eq!(out.status.code(), Some(1), "{args:?}: {err}");
+        assert!(err.contains("no prefab"), "{err}");
+    }
 }
