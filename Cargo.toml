@@ -1,0 +1,43 @@
+[package]
+name = "nocturne-unpack"
+version = "0.1.0"
+edition = "2021"
+description = "Reader for the Unity asset bundles of Shin Megami Tensei III Nocturne HD Remaster"
+license = "MIT OR Apache-2.0"
+readme = "README.md"
+
+[dependencies]
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+memmap2 = "0.9"
+# Reads UnityFS bundles and deserializes objects through their type trees. Patched, see NOTES-upstream.md
+rabex = { version = "0.2.1", default-features = false, features = ["compression-lz4", "compression-lzma"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+texture2ddecoder = "0.1.2"
+png = "0.18.1"
+# Shared model types for crossovers with other game rewrites
+rewrite-bridge = { git = "https://github.com/patodois/rewrite-bridge", rev = "1b5820180efbd585916ab206e6bcbbcf33096e1e", optional = true }
+
+# The peak memory report of check
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[features]
+bridge = ["dep:rewrite-bridge"]
+
+# rabex 0.2.1 reads UnityFS bundles of Unity 2019.4 one byte late; the copy in vendor/rabex fixes that
+# and adds a ranged read for .resS streams (see NOTES-upstream.md)
+[patch.crates-io]
+rabex = { path = "vendor/rabex" }
+
+# Decoding is slow without optimisations; keep our own code debuggable
+[profile.dev.package."*"]
+opt-level = 3
+debug = false
+
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package.nocturne-unpack]
+opt-level = 3
