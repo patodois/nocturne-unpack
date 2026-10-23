@@ -1,8 +1,10 @@
 //! Finding bundles in a game install, and following references between them.
 //!
-//! The base game's bundles are in `smt3hd_Data/StreamingAssets/PC` (the file called `PC` there
-//! is the AssetBundleManifest); downloadable content has more in `dlc/<n>/`. Bundles have no file
-//! extension; the file name is the bundle name other bundles list as a dependency.
+//! The base game's bundles are in `smt3hd_Data/StreamingAssets/PC` (the file called `Pc` there
+//! is the AssetBundleManifest); downloadable content has more in `dlc/<n>/`, but under the same
+//! names: every DLC file is a copy (or, for a few, a slightly different rebuild) of a base
+//! game bundle, so a name found twice is one bundle and the base game's file wins. Bundles have no
+//! file extension; the file name is the bundle name other bundles list as a dependency.
 
 use std::collections::HashMap;
 use std::fs::File;
@@ -18,6 +20,23 @@ use crate::bundle::{class, Bundle};
 use crate::unity::{PPtr, Shader};
 
 pub const DEFAULT_GAME_DIR: &str = "~/Games/smt3hd";
+
+/// The environment variable that replaces [`DEFAULT_GAME_DIR`] (an explicit `--game` wins over both).
+pub const GAME_DIR_ENV: &str = "NOCTURNE_GAME_DIR";
+
+/// The AssetBundleManifest in the `PC` folder (not a bundle of assets; its name is `Pc`).
+fn is_manifest(name: &std::ffi::OsStr) -> bool {
+    name.eq_ignore_ascii_case("pc")
+}
+
+fn has_manifest(dir: &Path) -> bool {
+    std::fs::read_dir(dir)
+        .map(|rd| {
+            rd.flatten()
+                .any(|e| is_manifest(&e.file_name()) && e.path().is_file())
+        })
+        .unwrap_or(false)
+}
 
 /// Expands a leading `~/`.
 pub fn expand_home(p: &Path) -> PathBuf {
@@ -50,10 +69,10 @@ impl Install {
             game.clone(),
         ]
         .into_iter()
-        .find(|p| p.join("PC").is_file())
+        .find(|p| has_manifest(p))
         .with_context(|| {
             format!(
-                "{} holds no smt3hd_Data/StreamingAssets/PC folder (the one with the `PC` manifest)",
+                "{} holds no smt3hd_Data/StreamingAssets/PC folder (the one with the `Pc` manifest)",
                 game.display()
             )
         })?;
@@ -92,7 +111,7 @@ impl Install {
     pub fn base_bundles(&self) -> Vec<PathBuf> {
         Self::list_dir(&self.pc)
             .into_iter()
-            .filter(|p| p.file_name().is_some_and(|n| n != "PC"))
+            .filter(|p| p.file_name().is_some_and(|n| !is_manifest(n)))
             .collect()
     }
 
@@ -114,6 +133,8 @@ impl Install {
             })
             .collect();
         v.sort_by_key(|p| p.file_name().map(|n| n.to_os_string()));
+        // the DLC folders repeat base game bundles: keep the first of each name, the base game's
+        v.dedup_by_key(|p| p.file_name().map(|n| n.to_os_string()));
         v
     }
 
@@ -130,6 +151,7 @@ impl Install {
             })
             .collect();
         v.sort_by_key(|p| p.file_name().map(|n| n.to_os_string()));
+        v.dedup_by_key(|p| p.file_name().map(|n| n.to_os_string()));
         v
     }
 

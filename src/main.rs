@@ -7,7 +7,7 @@ use clap::{Parser, Subcommand};
 
 use nocturne_unpack::bundle::Bundle;
 use nocturne_unpack::gltf;
-use nocturne_unpack::install::{Install, DEFAULT_GAME_DIR};
+use nocturne_unpack::install::{Install, DEFAULT_GAME_DIR, GAME_DIR_ENV};
 use nocturne_unpack::prefab;
 use nocturne_unpack::unity::*;
 
@@ -33,7 +33,7 @@ enum Command {
         /// Only bundles whose name contains this text (with `demons` or `fields`)
         #[arg(long)]
         filter: Option<String>,
-        #[arg(long, default_value = DEFAULT_GAME_DIR)]
+        #[arg(long, env = GAME_DIR_ENV, default_value = DEFAULT_GAME_DIR)]
         game: PathBuf,
     },
     /// Export a demon bundle (e.g. dvl0x01) as a skinned, textured .glb with its animation clips
@@ -52,12 +52,12 @@ enum Command {
         no_textures: bool,
         #[arg(long)]
         no_animations: bool,
-        #[arg(long, default_value = DEFAULT_GAME_DIR)]
+        #[arg(long, env = GAME_DIR_ENV, default_value = DEFAULT_GAME_DIR)]
         game: PathBuf,
     },
     /// Load every demon bundle and count failures
     Check {
-        #[arg(long, default_value = DEFAULT_GAME_DIR)]
+        #[arg(long, env = GAME_DIR_ENV, default_value = DEFAULT_GAME_DIR)]
         game: PathBuf,
         /// Only bundles whose name contains this text
         #[arg(long)]
@@ -71,7 +71,7 @@ enum Command {
     },
     /// Object classes, texture formats and the like across all bundles
     Census {
-        #[arg(long, default_value = DEFAULT_GAME_DIR)]
+        #[arg(long, env = GAME_DIR_ENV, default_value = DEFAULT_GAME_DIR)]
         game: PathBuf,
         /// Only bundles whose name contains this text
         #[arg(long)]
@@ -84,7 +84,7 @@ enum Command {
     /// (feature `bridge`)
     #[cfg(feature = "bridge")]
     CheckBridge {
-        #[arg(long, default_value = DEFAULT_GAME_DIR)]
+        #[arg(long, env = GAME_DIR_ENV, default_value = DEFAULT_GAME_DIR)]
         game: PathBuf,
         /// Only assets whose id or name contains this text
         #[arg(long)]
@@ -111,7 +111,7 @@ enum Command {
         clip: Option<String>,
         #[arg(long, default_value_t = 0.0)]
         time: f32,
-        #[arg(long, default_value = DEFAULT_GAME_DIR)]
+        #[arg(long, env = GAME_DIR_ENV, default_value = DEFAULT_GAME_DIR)]
         game: PathBuf,
     },
     /// Check the provider's output against the bridge's conventions (feature `bridge`). Takes the
@@ -125,7 +125,7 @@ enum Command {
     /// Diagnostics for the clips of a demon bundle
     Anim {
         bundle: String,
-        #[arg(long, default_value = DEFAULT_GAME_DIR)]
+        #[arg(long, env = GAME_DIR_ENV, default_value = DEFAULT_GAME_DIR)]
         game: PathBuf,
     },
     /// Write one texture of a bundle as PNG (the largest level), or list the textures
@@ -136,7 +136,7 @@ enum Command {
         /// Output PNG
         #[arg(short, long)]
         out: Option<PathBuf>,
-        #[arg(long, default_value = DEFAULT_GAME_DIR)]
+        #[arg(long, env = GAME_DIR_ENV, default_value = DEFAULT_GAME_DIR)]
         game: PathBuf,
     },
     /// Print the objects of one class of a bundle as JSON (for exploring)
@@ -148,7 +148,7 @@ enum Command {
         /// Print the type tree first
         #[arg(long)]
         tree: bool,
-        #[arg(long, default_value = DEFAULT_GAME_DIR)]
+        #[arg(long, env = GAME_DIR_ENV, default_value = DEFAULT_GAME_DIR)]
         game: PathBuf,
     },
 }
@@ -322,7 +322,10 @@ fn main() -> Result<()> {
         } => check_bridge(&game, only.as_deref(), &kind, textures)?,
         #[cfg(feature = "bridge")]
         Command::CheckConformance { args } => {
-            let (mut game, mut textures) = (PathBuf::from(DEFAULT_GAME_DIR), true);
+            let default_game = std::env::var_os(GAME_DIR_ENV)
+                .filter(|v| !v.is_empty())
+                .map_or_else(|| PathBuf::from(DEFAULT_GAME_DIR), PathBuf::from);
+            let (mut game, mut textures) = (default_game, true);
             let mut rest = Vec::new();
             let mut it = args.into_iter();
             while let Some(a) = it.next() {
@@ -834,7 +837,10 @@ fn list(game: &std::path::Path, what: Option<&str>, filter: Option<&str>) -> Res
     let install = Install::open(game)?;
     match what {
         None => {
-            let mut fam: BTreeMap<String, (usize, u64, usize)> = BTreeMap::new();
+            // One row per distinct name: the DLC folders repeat base game bundles (the base game's
+            // file is the one counted), so "in DLC" is how many of a family are also found there
+            let mut seen: std::collections::HashMap<String, (String, u64, bool)> =
+                std::collections::HashMap::new();
             for (p, dlc) in install
                 .base_bundles()
                 .into_iter()
@@ -842,9 +848,17 @@ fn list(game: &std::path::Path, what: Option<&str>, filter: Option<&str>) -> Res
                 .chain(install.dlc_bundles().into_iter().map(|p| (p, true)))
             {
                 let name = p.file_name().unwrap().to_string_lossy().to_string();
-                let e = fam.entry(family(&name)).or_default();
+                let size = file_size(&p);
+                let e = seen
+                    .entry(name.clone())
+                    .or_insert_with(|| (family(&name), size, false));
+                e.2 |= dlc;
+            }
+            let mut fam: BTreeMap<String, (usize, u64, usize)> = BTreeMap::new();
+            for (family, size, dlc) in seen.into_values() {
+                let e = fam.entry(family).or_default();
                 e.0 += 1;
-                e.1 += file_size(&p);
+                e.1 += size;
                 e.2 += usize::from(dlc);
             }
             println!(

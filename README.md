@@ -15,74 +15,190 @@ This project contains no game code or game data, and nothing extracted from the 
 dumps, screenshots or fixtures. It only reads files from a copy of the game you already have installed, so you need your
 own copy. Tests that need the game skip themselves when it is not there.
 
+## What you need
+
+- **Your own copy of the game: the Steam build for Windows** (Steam app 1413480). The files are the same on every
+  system, so this tool also runs on macOS and Linux, but Steam only installs the game on Windows. To get the files on
+  a Mac or Linux machine, use [SteamCMD](https://developer.valvesoftware.com/wiki/SteamCMD), Valve's command line
+  Steam client, and ask it for the Windows depot (you log in yourself; this tool never asks for a password):
+
+  ```sh
+  steamcmd +@sSteamCmdForcePlatformType windows +force_install_dir ~/Games/smt3hd \
+           +login <your steam user> +app_update 1413480 validate +quit
+  ```
+
+  Steam asks for your password and Steam Guard code there. The account must own the game. Installing it through
+  Steam under CrossOver or Proton also gives you the folder; anything that does works.
+- **The game folder** is the one that holds `smt3hd_Data` (and `smt3hd.exe`). Where it is depends on how you got it:
+
+  | how you installed | game folder |
+  |---|---|
+  | Steam on Windows | your Steam library's `steamapps\common\<the game's folder>` (in Steam: right click the game, Manage, Browse local files) |
+  | SteamCMD, as above | the `+force_install_dir` you gave |
+  | this tool's default | `~/Games/smt3hd` (the author's layout: any folder works) |
+
+  Point the tool at it with `--game <folder>` on a command, or once for the whole shell with
+  `export NOCTURNE_GAME_DIR=<folder>`; `--game` wins over the variable, which wins over the default. A leading `~/`
+  is expanded. `--game` also accepts the `smt3hd_Data/StreamingAssets/PC` folder itself.
+- **Rust**, the stable toolchain from [rustup.rs](https://rustup.rs) (edition 2021; written and tested with 1.99), and
+  `git`, because the `bridge` feature fetches [rewrite-bridge](https://github.com/patodois/rewrite-bridge) from GitHub.
+  A clean release build takes about 15 seconds on an M-series Mac with 4 jobs (`cargo build --release -j 4`), and the
+  `bridge` feature adds about 10 more.
+- **Disk and memory.** Nothing is extracted or copied; the game folder is about 12 GB. Each command opens one bundle at
+  a time. A 16 GB machine is enough for everything below; the heaviest sweep needs about 2 GB (numbers next to
+  [Usage](#usage)).
+
+## Words used here
+
+- **Unity, asset bundle**: the game is a Unity game. Its models, textures, animations and sounds are stored in *asset
+  bundles* (UnityFS files, Unity 2019.4), one file per bundle and with no file extension. A bundle carries its own *type
+  trees*, the field layout of every object it holds, which is how this tool reads them with nothing hardcoded.
+- **`.resS`**: a stream next to a bundle's data, where big payloads (texture pixels) live. It is read in ranges.
+- **Object, class id**: a bundle is a list of objects, each of a Unity class with a number
+  ([see below](#unity-class-ids)): `GameObject`, `Transform`, `Mesh`, `Material`, `Texture2D`, `AnimationClip` ...
+- **Prefab, GameObject, Transform**: a prefab is a saved scene object: a tree of GameObjects, each with a Transform
+  (position, rotation, scale), and components such as a mesh and its renderer.
+- **Skinned mesh, bone weights**: a mesh deformed by a skeleton: every vertex says which bones move it and how much.
+  A *rigid* mesh is one piece fixed to a bone.
+- **Animator, clip**: a clip (`AnimationClip`) is one animation made of curves over time; the demon's Animator lists
+  its clips.
+- **Demon** (`dvl0x01`, ...): a creature of the game, one bundle each. **Field** (`f012`, ...): a place you walk through,
+  made of several prefabs (one per block of the map). **DLC folders**: `dlc/<n>` next to the base game; see
+  [the DLC folders](#the-dlc-folders-repeat-the-base-game).
+- **TextAsset**: a file stored raw. The fields carry console-era Atlus files this way; they are only listed.
+- **glTF, `.glb`**: the open 3D format the exporter writes (binary form); Blender and every viewer open it.
+- **[rewrite-bridge](https://github.com/patodois/rewrite-bridge)**: a small library with common model types, so rewrites
+  of different games can load each other's assets into one scene. A **Provider** is a game's reader that implements it;
+  this crate has one (feature `bridge`). To write one for another game, see
+  [docs/WRITING_A_PROVIDER.md](https://github.com/patodois/rewrite-bridge/blob/main/docs/WRITING_A_PROVIDER.md).
+- **Conformance checker**: the bridge's test that a provider's output has the right units, orientation and winding;
+  see [Conformance](#conformance).
+
 ## Build
 
 ```sh
 cargo build --release
-cargo build --release --features bridge     # adds the rewrite-bridge provider and check-bridge
+cargo build --release --features bridge     # adds the rewrite-bridge provider, check-bridge and check-conformance
+
+export PATH=$PWD/target/release:$PATH       # so `nocturne-unpack` works from anywhere (this shell only);
+                                            # or write `cargo run --release --` in front of each command below
 ```
 
 ## Usage
 
-`--game` is the game folder (the one that holds `smt3hd_Data`) and defaults to `~/Games/smt3hd`. It also accepts the
-`StreamingAssets/PC` folder itself. Bundles are named as in that folder (`dvl0x01`) or given as a path. Bundles have no
-file extension, and the file called `PC` is Unity's AssetBundleManifest.
+`--game` is the game folder (the one that holds `smt3hd_Data`); it defaults to `$NOCTURNE_GAME_DIR`, else
+`~/Games/smt3hd`, and also accepts the `StreamingAssets/PC` folder itself. Bundles are named as in that folder
+(`dvl0x01`) or given as a path. Bundles have no file extension, and the file called `Pc` in that folder is Unity's
+AssetBundleManifest, not a bundle of assets.
 
 ```sh
-G=~/Games/smt3hd
+export NOCTURNE_GAME_DIR=~/Games/smt3hd     # or add --game ~/Games/smt3hd to each command
 
 # Families of bundles with counts and sizes; the demons or fields; or what one bundle holds
-nocturne-unpack list --game $G
-nocturne-unpack list demons --game $G --filter dvl0x0
-nocturne-unpack list fields --game $G
-nocturne-unpack list f012 --game $G          # objects, prefabs, TextAssets with their tags and sizes
+nocturne-unpack list
+nocturne-unpack list demons --filter dvl0x0
+nocturne-unpack list fields
+nocturne-unpack list f012                    # objects, prefabs, TextAssets with their tags and sizes
 
 # A demon as a skinned, textured .glb with every clip of its animator; --prefab picks another
 # prefab of the bundle, --no-textures and --no-animations leave those out
-nocturne-unpack export dvl0x01 dvl0x01.glb --game $G
+nocturne-unpack export dvl0x01 dvl0x01.glb
 # A field prefab (a field is made of several, one per block, each in its own frame) or all of them
-nocturne-unpack export f012 f012_002.glb --prefab f012_002 --game $G
-nocturne-unpack export f012 f012_all.glb --all-prefabs --game $G
+nocturne-unpack export f012 f012_002.glb --prefab f012_002
+nocturne-unpack export f012 f012_all.glb --all-prefabs
 
-# Load every demon bundle (base game and DLC), count failures, report the peak memory; --kind fields
-# does the same for the field bundles (all prefabs of a bundle at once)
-nocturne-unpack check --game $G
-nocturne-unpack check --game $G --kind fields --no-textures
+# Load every demon bundle, count failures, report the peak memory; --kind fields does the same
+# for the field bundles (all prefabs of a bundle at once)
+nocturne-unpack check
+nocturne-unpack check --kind fields --no-textures
 
 # One texture of a bundle as PNG (the largest level), or the textures of a bundle with their formats
-nocturne-unpack texture dvl0x01 --game $G
-nocturne-unpack texture dvl0x01 0x01_t05 -o t05.png --game $G
+nocturne-unpack texture dvl0x01
+nocturne-unpack texture dvl0x01 0x01_t05 -o t05.png
 
-# Through the rewrite-bridge provider: load and validate every demon (with its clips) and every field prefab
-# (as a model and as a scene); --textures builds the materials with their textures too
-nocturne-unpack check-bridge --game $G
-nocturne-unpack check-bridge --game $G --kind demons --textures
+# Through the rewrite-bridge provider (build with --features bridge): load and validate every demon (with
+# its clips) and every field prefab (as a model and as a scene); --textures builds the materials with their
+# textures too
+nocturne-unpack check-bridge
+nocturne-unpack check-bridge --kind demons --textures
 
 # The rewrite-bridge conformance checker on what the provider returns (options as in its README, plus
-# --game and --no-textures); --kind character for the demons, --kind level for field prefabs
-nocturne-unpack check-conformance --game $G --kind character --compare-load
-nocturne-unpack check-conformance --game $G --id f012/f012_002 -v
+# --game and --no-textures); --kind character for the demons, --kind level for field prefabs.
+# Exit status 1 means an asset has an error, which is the case for some field prefabs (see Conformance)
+nocturne-unpack check-conformance --kind character --compare-load
+nocturne-unpack check-conformance --id f012/f012_002 -v
 
 # Object classes and texture formats across all bundles; --decode also decodes every texture and mesh
-nocturne-unpack census --game $G --decode
+nocturne-unpack census --decode
 
 # Exploring: one object as JSON (with its type tree), clip diagnostics, numbers for cross-checks
-nocturne-unpack dump dvl0x01 74 --nth 0 --tree --game $G
-nocturne-unpack anim dvl0x07 --game $G
-nocturne-unpack probe dvl0x01 --mesh "0x01 body" --node "p Pelvis/b Spine" --clip b00 --time 0.5 --game $G
+nocturne-unpack dump dvl0x01 74 --nth 0 --tree     # 74 is the Unity class id of AnimationClip
+nocturne-unpack anim dvl0x07
+nocturne-unpack probe dvl0x01 --mesh "0x01 body" --node "p Pelvis/b Spine" --clip b00 --time 0.5
 ```
 
 `-v` names every material property that is not carried over instead of counting them.
+
+**Time and memory** (release build, M-series Mac, 16 GB; "peak" is the peak resident size): `list` 0.3 s;
+`list fields` 3 s and 430 MB (it opens every field bundle); `export` of one demon or one field prefab under 1 s and
+about 100 MB; `check` 6 s and 350 MB; `check --kind fields --no-textures` 8 s and 490 MB; `census --decode` 35 s and
+760 MB; `check-bridge --kind demons --textures` 19 s and 450 MB; `check-bridge --kind fields` 46 s and 460 MB
+(with `--textures` the largest fields need more than 1 GB); `check-conformance --kind character` 8 s and 530 MB;
+`check-conformance --kind level` 43 s and 2.2 GB (the one heavy command: it keeps a whole scene at a time).
 
 Every bundle is opened on its own: the file is memory-mapped, its objects are parsed into memory and the `.resS`
 streams are read in ranges, decompressing only the compression blocks a request touches. The sweeps (`check`,
 `census`) never hold more than one bundle.
 
-The tests in `tests/game_data.rs` run against a real install when `NOCTURNE_GAME_DIR` points at the game folder:
+The tests in `tests/` run against a real install when `NOCTURNE_GAME_DIR` points at the game folder, and skip
+themselves without it:
 
 ```sh
-NOCTURNE_GAME_DIR=~/Games/smt3hd cargo test --release
+NOCTURNE_GAME_DIR=~/Games/smt3hd cargo test --release --features bridge
 ```
+
+### Unity class ids
+
+`dump <bundle> <class>` takes the number of a Unity class, as Unity's own class ID reference lists them (the tool
+only knows the ones it reads; `list <bundle>` prints how many objects of each class a bundle has):
+
+| id | class | what it is here |
+|---:|---|---|
+| 1 | `GameObject` | a node of a prefab's tree, with a name |
+| 4 | `Transform` | a node's position, rotation and scale |
+| 21 | `Material` | a surface: shader, colours, textures |
+| 23 | `MeshRenderer` | draws a rigid mesh |
+| 28 | `Texture2D` | an image, usually streamed from the `.resS` |
+| 33 | `MeshFilter` | links a node to its `Mesh` |
+| 43 | `Mesh` | vertices and triangles |
+| 48 | `Shader` | a shader (the game's own are in the `common` bundle) |
+| 49 | `TextAsset` | a raw file, such as the console-era Atlus files |
+| **74** | `AnimationClip` | **one animation: curves of positions, rotations, scales over time** |
+| 83 | `AudioClip` | a sound (not read) |
+| 90 | `Avatar` | the skeleton's path table of an Animator |
+| 91 | `AnimatorController` | the Animator's list of clips and states |
+| 95 | `Animator` | puts a controller on a node |
+| 137 | `SkinnedMeshRenderer` | draws a skinned mesh with its bones |
+| 142 | `AssetBundle` | the bundle's own table of contents: asset paths and dependencies |
+
+So `dump dvl0x01 74 --nth 0 --tree` prints the first animation clip of demon 1 and the type tree it was read with
+(`--nth` counts objects of that class, from 0).
+
+### Where names come from
+
+The tool makes no names up. Bundle names are the file names in the game folder (`dvl0x01` is the game's own number for a demon, `0x01`; `f012` is a field). The prefab path comes from the bundle's table of contents
+(`.../devil_0x01/devil_0x01.prefab`, shown by `list dvl0x01`). Names of meshes (`0x01 body`), nodes
+(`p Pelvis/b Spine`, a path below the Animator), clips (`b00`, `b04`), materials, textures and TextAssets are the
+`m_Name` stored in the objects themselves, as the game's artists named them. A demon's in-game name is not among
+them; if the game keeps it next to the model, it is in the data table (`d0x01.PB`), which is not read.
+
+### The DLC folders repeat the base game
+
+`dlc/<n>` holds copies of bundles that are already in the base game (the same file names, byte for byte for most, a
+slightly different rebuild for a few), not new ones: 3,087 files are 2,250 distinct names. The same name in two places is
+one bundle, and the base game's file is the one used. `list`, `check` and the provider list each name once; before
+this, `list fields` showed `f001m` twice, because it is in the base game and in `dlc/2`. `census` still reads every
+file, so it counts the copies.
 
 ## Container layer
 
@@ -96,7 +212,7 @@ rabex 0.2.1 with three small changes (a patch for upstream is in `patches/`, the
 - the buffer of a file read from a bundle is reserved up front, which stopped the process from growing by about 12 MB
   every time the same bundle was opened and dropped again
 
-With that, all 3,088 bundles (2,251 in the base game, 837 in the DLC folders) open, and every object decodes through the
+With that, all 3,087 bundle files (2,250 in the base game, 837 in the DLC folders, which repeat base names) open, and every object decodes through the
 type tree stored in its own bundle. No field layout is hardcoded for the Unity version.
 
 ## What a demon holds
@@ -110,7 +226,7 @@ with the most renderers is the default) and everything it uses:
   Mecanim generic clips (not legacy, not humanoid), and `Avatar`s
 - sounds and a `.pb.bytes` data table, which are not read
 
-25 of the 259 demon bundles have no model at all, only the data table and sounds.
+25 of the 257 demon bundles have no model at all, only the data table and sounds.
 
 ### Conversion
 
@@ -138,26 +254,51 @@ with the most renderers is the default) and everything it uses:
 ## rewrite-bridge
 
 With the `bridge` feature, `src/bridge.rs` implements [rewrite-bridge](https://github.com/patodois/rewrite-bridge)'s
-`Provider` (pinned to git rev `0c5d0b0e08fcff58166f2ed6ad3daf9bdc72c0a8`), like wf-unpack's.
+`Provider` (pinned to rewrite-bridge `v0.1.0`), like wf-unpack's.
 
 - `list` returns every demon (id is the bundle name, `dvl0x01`, kind Character) and every field prefab that has
   something to draw (`f012/f012_002`, kind Level); prefabs of only transforms are left out.
 - `load_animated` returns a validated demon with its clips as `Animation`s and `Channel`s on the model's nodes; `load`
   is the same model. For a field prefab, `load` gives its static model.
 - `load_scene` (field prefabs) returns a scene: one inline model per distinct mesh with its materials, placed by an
-  instance with the node's world transform. The game data has almost no instancing (83,306 placements of 82,649 models).
+  instance with the node's world transform. The game data has almost no instancing (about 66,984 placements of 66,425 models).
   A world matrix with shear cannot be a translation, rotation and scale; it is counted and the closest transform kept.
 - The bridge has no place for texture samplers and tiling, vertex colours or a second UV set. Lights and cameras are not
   read.
 
+To use the provider from another crate, depend on both, and keep **rewrite-bridge on the same tag this crate uses**
+(`v0.1.0`): with two versions of rewrite-bridge in one build, `Nocturne` implements a `Provider` that your code's
+`Provider` is not, and the compiler reports "multiple different versions of crate `rewrite_bridge`".
+`cargo tree -i rewrite-bridge` must show a single copy.
+
+```toml
+[dependencies]
+nocturne-unpack = { git = "https://github.com/patodois/nocturne-unpack", features = ["bridge"] }   # add rev = "<commit>" to pin it
+rewrite-bridge = { git = "https://github.com/patodois/rewrite-bridge", tag = "v0.1.0" }
+```
+
+```rust
+use rewrite_bridge::Provider;
+let nocturne = nocturne_unpack::bridge::Nocturne::open("~/Games/smt3hd")?;
+let demon = nocturne.load_animated("dvl0x01")?;
+```
+
 ## Conformance
 
 `check-conformance` runs rewrite-bridge's conformance checker (`rewrite_bridge::conformance`) over the provider's output.
-Over all 234 demons (`load_animated`, `--compare-load`) it reports no errors; over 45 field prefabs spread over the
-install (`load_scene`) one, a mesh whose own triangles wind against its own normals. What it reports besides is
-the game's data, not the provider, and stays as it is (`-v` lists it):
+Over all 232 demons (`--kind character --compare-load`, 8 s) it reports no errors. Over all 1,039 field prefabs
+(`--kind level`, 43 s, 2.2 GB) it reports two error codes, so that command exits with status 1:
 
-- `skin.bind_pose_mismatch` (info, 214 demons): Unity's bind poses are the bone's world-to-local matrix times the
+- `geometry.winding_flipped`: 287 meshes in 37 field prefabs have 54 to 100 % of their triangles wound against their own
+  stored normals (names such as `room*`, `kabeL*`, `Plane*` and `md_*`). The same conversion gives demons no such
+  finding, so these are the source meshes; the provider does not guess which side is meant to face out.
+- `geometry.non_finite`: 7 meshes of `f004/f004_001` (`md_01all_smoke_new*`) have NaN or infinite normals in 2 vertices
+  each.
+
+What it reports besides is the game's data, not the provider, and stays as it is (`-v` lists it). Counts are for the
+demons unless a field prefab is named:
+
+- `skin.bind_pose_mismatch` (info, 212 demons): Unity's bind poses are the bone's world-to-local matrix times the
   *renderer's* local-to-world one, so the node pose is not the inverse of the inverse bind matrices when the
   skinned mesh's node is not at the origin. glTF's skinning gives the same result as Unity's at rest, and the
   renders at rest are undeformed.
@@ -168,19 +309,19 @@ the game's data, not the provider, and stays as it is (`-v` lists it):
   box. For some demons that is right (`dvl0x0e` faces -X at rest, as its renders show), for others it is not (`dvl0x0c`
   and `dvl0x10` face +Z; their limbs and weapons reach forward, and `h_eye` is an effect anchor, not an eye).
   The data has no front axis, so none is guessed.
-- `material.blend_opaque_texture` (35 demons, 37 field prefabs): these are additive materials (`_DstBlend` 1) and
+- `material.blend_opaque_texture` (34 demons, 792 field prefabs): these are additive materials (`_DstBlend` 1) and
   materials whose alpha comes from vertex colours (not exported). glTF has no additive mode, so they come out as `BLEND`.
-  `material.opaque_transparent_texture`: the alpha channel of an opaque material's texture is data for the Atlus
+  `material.opaque_transparent_texture` (22 demons, 294 field prefabs): the alpha channel of an opaque material's texture is data for the Atlus
   shader, not transparency (render queue 2000, blend factors one and zero). Alpha modes follow Unity's keywords, and
   in every Atlus material of the demons they agree with `_DstBlend` and the render queue (blend keywords go with
   factor 1 or 10 and queue 3000, alpha test with queue 2450, the rest is opaque).
 - `orientation.not_upright` (6 demons): snakes and dragons, 7 m long and 1 m high. `animation.zero_scale` (`dvl0xc0d`):
   the node `ebony` is hidden by scaling it to zero. `animation.pose_extent_mismatch` (4): a part that moves 9 m away from
-  the body during a clip (`dvl0x0e` `b12`), a skeleton that retracts to a fifth of its size (`dvl0x95` `b01`). `animation.duplicate_name` / `animation.empty`
+  the body during a clip (`dvl0x0e` `b12`), a skeleton that retracts to a fifth of its size (`dvl0x95` `b01`). `animation.duplicate_name` (4 demons) / `animation.empty`
   (`dvl0x110`, `dvl0x40`, `dvl0x73`): the animator lists two clips with the same name (in `dvl0x110` the second has 119
-  bindings against 171) and one of them resolves to no channel. `scene.instance_scale_extreme` (`f676_010`): an object scaled to 8e-6 to hide it.
-  `geometry.winding_flipped` (`f003_001`, 120 triangles): the source mesh has every triangle against its normals;
-  100,000 others agree, so this is that mesh.
+  bindings against 171) and one of them resolves to no channel. `scene.instance_scale_extreme` (16 field prefabs, such as `f676_010`): an object scaled to 8e-6 to hide it.
+  Field prefabs also give `scale.too_large` (14 prefabs, up to kilometres: skies and floors), `scale.too_small` (2) and
+  `geometry.degenerate_triangles` (154).
 
 ## Verification
 
@@ -189,18 +330,20 @@ bundles are 2018.4.13f1).
 
 All numbers are from one run on a 16 GB machine, one bundle open at a time; "peak" is the peak resident size.
 
-- `census --decode`: all 3,088 bundles (2,251 in the base game, 837 in the DLC folders) open, every one with type trees,
-  none failing; 15,930 `Texture2D` (Alpha8 10, DXT1 10,742, DXT5 3,455, BC7 41, RGB24 1,179, RGBA32 503) and all 112,166
-  `Mesh` objects decode without a failure (peak 857 MB, 40 s). The classes of its 1,468,692 objects include 435,455
+- `census --decode`: all 3,087 bundle files (2,250 in the base game, 837 in the DLC folders, which repeat base names; the
+  `Pc` manifest is not counted) open, every one with type trees, none failing; 15,930 `Texture2D` (Alpha8 10, DXT1
+  10,742, DXT5 3,455, BC7 41, RGB24 1,179, RGBA32 503) and all 112,166 `Mesh` objects decode without a failure (peak
+  760 MB, 35 s). The classes of its 1,468,690 objects include 435,455
   GameObject, 408,793 Transform, 119,629 MeshRenderer, 3,749 SkinnedMeshRenderer, 35,323 Material, 12,552 AudioClip,
   9,594 AnimationClip, 8,568 TextAsset and 406 Shader; `nocturne-unpack census` prints them all.
-- `check`: 259 demon bundles (257 in the base game, 2 in the DLC): 234 load, 25 hold no model (a data table and sounds
-  only), 0 failures. 540,397 triangles, 538,893 vertices, 4,562 meshes, 334 skins, 2,849 materials, 2,032 textures and
-  1,764 clips with 251,991 channels decode in 6.4 s with a peak of 301 MB. The materials use `Atlus/Atlus_CHAR` (2,826),
-  `Atlus/AtlusMat` (10), `Atlus/Atlus_CHAR2` (4) and `Standard` (9); 116 have a tiled or offset `_MainTex`.
-- `check-bridge`: 234 of 234 demons load and validate as `AnimatedModel`s with textures (20 s, peak 419 MB), and all
-  1,466 field prefabs load as a static model and as a validated scene (118 s, peak 422 MB without textures): 124,356
-  meshes, 19.8 million vertices, 82,687 scene models placed by 83,344 instances.
+- `check`: 257 demon bundles: 232 load, 25 hold no model (a data table and sounds only), 0 failures. 532,268 triangles,
+  529,738 vertices, 4,513 primitives, 327 skins, 2,808 materials, 2,017 textures and 1,733 clips with 246,607 channels
+  decode in 6.1 s with a peak of 350 MB. The materials use `Atlus/Atlus_CHAR` (2,786), `Atlus/AtlusMat` (10),
+  `Atlus/Atlus_CHAR2` (3) and `Standard` (9); 116 have a tiled or offset `_MainTex`.
+- `check-bridge`: 232 of 232 demons load and validate as `AnimatedModel`s with textures (19 s, peak 450 MB), and all
+  1,039 listed field prefabs (of 1,066 in the 182 field bundles; the others have nothing to draw) load as a static model
+  and as a validated scene (46 s, peak 460 MB without textures): 99,774 meshes, 14.2 million vertices, 66,425 scene
+  models placed by 66,984 instances.
 - **Cross-checks** against UnityPy 1.25.4, which reads the same bundles independently, for the vertex count, first vertex
   (position, normal, UV, bone weights and indices), first indices and bind pose of a skinned mesh, a bone's local
   transform, the path CRC-32, and a clip's sampled position and rotation (UnityPy has no sampler, so the oracle
@@ -209,12 +352,12 @@ All numbers are from one run on a 16 GB machine, one bundle open at a time; "pea
   against a double). On `dvl0x07`, where the clip is made of Euler curves, the written channel is 0.003 and 0.001 degrees
   from the true curve at two times between keys. Textures of all six formats are pixel-identical to Pillow's independent
   decoders (DXT1, DXT5, BC7) and to the raw data (RGB24, RGBA32, Alpha8).
-- Of the 234 demon exports, every one passes the Khronos glTF validator with no errors (warnings only: a skinned mesh
+- Of the 234 demon files exported before the duplicate names were folded into 232 (not repeated since), every one passes the Khronos glTF validator with no errors (warnings only: a skinned mesh
   below the root, a clip that also animates the node that carries a skinned mesh). A sample of 44 field prefabs passes too.
 - Renders, made with three.js in headless Chromium: demons in the bind pose and in the middle of a clip, and a field.
   They are not in the repository.
-- `cargo test --release` with `NOCTURNE_GAME_DIR` set: 31 unit tests, 6 tests against the install and 4 against the
-  install through the bridge; without it only the unit tests run. `cargo clippy --all-targets -- -D warnings` is clean,
+- `cargo test --release --features bridge` with `NOCTURNE_GAME_DIR` set: 32 unit tests, 6 tests against the install and
+  7 against the install through the bridge (5 provider, 2 conformance); without the variable only the unit tests run. `cargo clippy --all-targets -- -D warnings` is clean,
   with and without the `bridge` feature.
 
 ## Format notes
@@ -254,14 +397,14 @@ and `src/prefab.rs` describe the layouts.
 
 ## Left out
 
-Counts come from `check` (all 234 demons) and `check --kind fields` (all 201 field bundles); `-v` names the material
-properties.
+Counts come from `check` (all 257 demon bundles, 232 with a model) and `check --kind fields` (all 182 field bundles);
+`-v` names the material properties.
 
 **Demons**
 
 - Animation bindings that drive anything but a Transform's position, rotation, scale or Euler angles: GameObject active
-  flags (3), renderer material properties (191) and one more kind of renderer property (134 curves). Bindings whose path
-  is not in the prefab's hierarchy (2,542) are skipped.
+  flags (3), renderer material properties (190) and one more kind of renderer property (67). Bindings whose path
+  is not in the prefab's hierarchy (2,422) are skipped.
 - Euler rotation curves (3,720 channels in 25 demons) are written as quaternion keys. They are exact at the game's keys
   and between them within 0.05 degrees (median 0.04, 99% within 0.105), found by adding 271,216 keys; in 704 channels
   an interval still misses that after five halvings, the worst by 0.33 degrees. Mecanim interpolates the angles and
@@ -271,10 +414,10 @@ properties.
   stop (1,512) are cut to the range, with the value the curve has at the edge.
 - Clip settings: loop flags, events, root motion and orientation settings, and the animator controller's states,
   transitions and parameters (only its list of clips is used). The bridge and glTF have no loop flag.
-- Geometry: the second UV set (56 meshes), vertex colours (433 meshes whose shader does not read them, 28 whose shader
+- Geometry: the second UV set (42 meshes), vertex colours (407 meshes whose shader does not read them, 24 whose shader
   does but blends them with parameters that are not mapped), blend shapes (the demons have none), the `h_*` nodes as
   attachment points (they stay plain nodes, no socket is declared because the data does not say what they are).
-  Renderers on inactive objects or disabled are skipped (444); one renderer has no mesh. In 35 skinned renderers the
+  Renderers on inactive objects or disabled are skipped (435); one renderer has no mesh. In 34 skinned renderers the
   root bone is not above all the bones, so no skeleton is declared (glTF requires that); in one a bone sits in several
   slots and is merged.
 - Materials: for the `Atlus/...` shaders everything except `_MainTex` and the alpha mode (the shaders have 112 to 129
@@ -294,12 +437,12 @@ properties.
 - Lights (49,273 `Light` objects in the install; Unity's intensities have no photometric unit, so none is mapped),
   cameras, colliders, particle systems, and the legacy `Animation` components (15,011 in the install) with their
   clips.
-- Of 201 field bundles, 20 have no Unity model at all. In the others: renderers on inactive objects (5,493) are skipped,
-  864 renderers have no mesh, 24,406 meshes have a second UV set, 60 sub-meshes have no material, 15 have no entry in
-  the renderer's list (the last material is used), 10,562 meshes carry vertex colours the shader does not read and 96,062
+- Of 182 field bundles, 20 have no Unity model at all. In the others: renderers on inactive objects (4,970) are skipped,
+  843 renderers have no mesh, 19,128 meshes have a second UV set, 42 sub-meshes have no material, 15 have no entry in
+  the renderer's list (the last material is used), 9,450 meshes carry vertex colours the shader does not read and 78,013
   carry ones it reads (not mapped), one has blend shapes. Texture tiling is not applied in the bridge (no field for it)
   and was not set on any field material.
-- 1 of 1,497 prefabs (`f804_060`) has a skinned renderer whose mesh has no bone weights; it is drawn rigid.
+- 1 of 1,066 prefabs (`f804_060`) has a skinned renderer whose mesh has no bone weights; it is drawn rigid.
 
 
 ## Credits

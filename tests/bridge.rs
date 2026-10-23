@@ -23,10 +23,20 @@ fn lists_demons_and_field_prefabs() {
         .count();
     let levels = all.iter().filter(|a| a.kind == AssetKind::Level).count();
     assert_eq!(
-        demons, 234,
-        "demons with a model (259 bundles, 25 hold only data)"
+        demons, 232,
+        "demons with a model (257 bundles, 25 hold only data)"
     );
-    assert!(levels > 1000 && levels < 1497, "{levels} field prefabs");
+    assert!(levels > 900 && levels < 1066, "{levels} field prefabs");
+    // the DLC folders repeat base game bundles; a demon must not be listed twice
+    let mut ids: Vec<&str> = all
+        .iter()
+        .filter(|a| a.kind == AssetKind::Character)
+        .map(|a| a.id.as_str())
+        .collect();
+    let n = ids.len();
+    ids.sort();
+    ids.dedup();
+    assert_eq!(ids.len(), n, "demons listed twice");
     let first = p.list("dvl0x01").unwrap();
     assert_eq!(first.len(), 1);
     assert_eq!(first[0].id, "dvl0x01");
