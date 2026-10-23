@@ -41,9 +41,10 @@ own copy. Tests that need the game skip themselves when it is not there.
   `export NOCTURNE_GAME_DIR=<folder>`; `--game` wins over the variable, which wins over the default. A leading `~/`
   is expanded. `--game` also accepts the `smt3hd_Data/StreamingAssets/PC` folder itself.
 - **Rust**, the stable toolchain from [rustup.rs](https://rustup.rs) (edition 2021; written and tested with 1.99), and
-  `git`, because the `bridge` feature fetches [rewrite-bridge](https://github.com/patodois/rewrite-bridge) from GitHub.
-  A clean release build takes about 15 seconds on an M-series Mac with 4 jobs (`cargo build --release -j 4`), and the
-  `bridge` feature adds about 10 more.
+  `git`, because Cargo fetches [rabex](#container-layer) from our fork on GitHub, and the `bridge` feature fetches
+  [rewrite-bridge](https://github.com/patodois/rewrite-bridge) too.
+  A clean release build takes about 11 seconds on an M-series Mac with 4 jobs (`cargo build --release -j 4`), and the
+  `bridge` feature adds about 5 more.
 - **Disk and memory.** Nothing is extracted or copied; the game folder is about 12 GB. Each command opens one bundle at
   a time. A 16 GB machine is enough for everything below; the heaviest sweep needs about 2 GB (numbers next to
   [Usage](#usage)).
@@ -71,6 +72,13 @@ own copy. Tests that need the game skip themselves when it is not there.
   of different games can load each other's assets into one scene. A **Provider** is a game's reader that implements it;
   this crate has one (feature `bridge`). To write one for another game, see
   [docs/WRITING_A_PROVIDER.md](https://github.com/patodois/rewrite-bridge/blob/main/docs/WRITING_A_PROVIDER.md).
+- **Other providers**: [wf-unpack](https://github.com/patodois/wf-unpack) (Warframe),
+  [wt-unpack](https://github.com/patodois/wt-unpack) (War Thunder) and
+  [hytale-unpack](https://github.com/patodois/hytale-unpack) (Hytale) read their games the same way and return the same
+  types, so a demon from here can stand next to their characters.
+- **[bridge-testbed](https://github.com/patodois/bridge-testbed)**: a [Bevy](https://bevy.org) app that loads the assets
+  of every provider side by side, to check scale, orientation and animation across games by eye. It needs your own game
+  installs and no game data is in it.
 - **Conformance checker**: the bridge's test that a provider's output has the right units, orientation and winding;
   see [Conformance](#conformance).
 
@@ -86,8 +94,8 @@ export PATH=$PWD/target/release:$PATH       # so `nocturne-unpack` works from an
 
 ## Usage
 
-`--game` is the game folder (the one that holds `smt3hd_Data`); it defaults to `$NOCTURNE_GAME_DIR`, else
-`~/Games/smt3hd`, and also accepts the `StreamingAssets/PC` folder itself. Bundles are named as in that folder
+`--game` is the game folder (the one that holds `smt3hd_Data`), written before or after the command; it defaults to
+`$NOCTURNE_GAME_DIR`, else `~/Games/smt3hd`, and also accepts the `StreamingAssets/PC` folder itself. Bundles are named as in that folder
 (`dvl0x01`) or given as a path. Bundles have no file extension, and the file called `Pc` in that folder is Unity's
 AssetBundleManifest, not a bundle of assets.
 
@@ -131,20 +139,23 @@ nocturne-unpack check-conformance --id f012/f012_002 -v
 # Object classes and texture formats across all bundles; --decode also decodes every texture and mesh
 nocturne-unpack census --decode
 
-# Exploring: one object as JSON (with its type tree), clip diagnostics, numbers for cross-checks
-nocturne-unpack dump dvl0x01 74 --nth 0 --tree     # 74 is the Unity class id of AnimationClip
+# Exploring: one object as JSON (with its type tree), clip diagnostics, numbers for cross-checks.
+# The tree of a clip is about 50,000 lines; the command ends quietly when `head` stops reading
+nocturne-unpack dump dvl0x01 74 --nth 0 --tree | head -40     # 74 is the Unity class id of AnimationClip
 nocturne-unpack anim dvl0x07
 nocturne-unpack probe dvl0x01 --mesh "0x01 body" --node "p Pelvis/b Spine" --clip b00 --time 0.5
 ```
 
 `-v` names every material property that is not carried over instead of counting them.
 
-**Time and memory** (release build, M-series Mac, 16 GB; "peak" is the peak resident size): `list` 0.3 s;
-`list fields` 3 s and 430 MB (it opens every field bundle); `export` of one demon or one field prefab under 1 s and
-about 100 MB; `check` 6 s and 350 MB; `check --kind fields --no-textures` 8 s and 490 MB; `census --decode` 35 s and
-760 MB; `check-bridge --kind demons --textures` 19 s and 450 MB; `check-bridge --kind fields` 46 s and 460 MB
-(with `--textures` the largest fields need more than 1 GB); `check-conformance --kind character` 8 s and 530 MB;
-`check-conformance --kind level` 43 s and 2.2 GB (the one heavy command: it keeps a whole scene at a time).
+**Time and memory** (release build, M-series Mac, 16 GB, 23 October 2026; "peak" is the peak resident size; the first
+run after a restart is slower while the game files are read from disk): `list` under 0.1 s; `list fields` 1 s and 410 MB
+(it opens every field bundle); `export` of one demon 0.2 s and 90 MB, of one field prefab 0.4 s and 120 MB; `check` 2 s
+and 350 MB; `check --kind fields --no-textures` 3 s and 520 MB; `census --decode` 17 s and 850 MB;
+`check-bridge --kind demons --textures` 7 s and 530 MB; `check-bridge --kind fields` 33 s and 480 MB (with `--textures`
+the largest fields need more than 1 GB); `check-conformance --kind character` 4 s and 480 MB (6 s with
+`--compare-load`); `check-conformance --kind level` 28 s and 2.0 GB (the one heavy command: it keeps a whole scene at a
+time).
 
 Every bundle is opened on its own: the file is memory-mapped, its objects are parsed into memory and the `.resS`
 streams are read in ranges, decompressing only the compression blocks a request touches. The sweeps (`check`,
@@ -182,7 +193,8 @@ only knows the ones it reads; `list <bundle>` prints how many objects of each cl
 | 142 | `AssetBundle` | the bundle's own table of contents: asset paths and dependencies |
 
 So `dump dvl0x01 74 --nth 0 --tree` prints the first animation clip of demon 1 and the type tree it was read with
-(`--nth` counts objects of that class, from 0).
+(`--nth` counts objects of that class, from 0). That is a lot of lines (the clip's samples); pipe it to `head`, or to a
+file.
 
 ### Where names come from
 
@@ -204,13 +216,19 @@ file, so it counts the copies.
 
 The bundles are read with [rabex](https://github.com/jakobhellermann/RustyAssetBundleEXtractor) 0.2.1, which reads
 UnityFS bundles and serialized files and deserializes objects through type trees. It could not open these bundles as
-released, because Unity 2019.4 writes version 6 bundles and rabex read their header one byte late. `vendor/rabex` is
-rabex 0.2.1 with three small changes (a patch for upstream is in `patches/`, the story is in `NOTES-upstream.md`):
+released, because Unity 2019.4 writes version 6 bundles and rabex read their header one byte late. `Cargo.toml` depends
+on the branch `nocturne` of [our fork](https://github.com/patodois/RustyAssetBundleEXtractor), which is rabex 0.2.1 with
+three small changes (proposed upstream as
+[jakobhellermann/RustyAssetBundleEXtractor#1](https://github.com/jakobhellermann/RustyAssetBundleEXtractor/pull/1);
+the story is in `NOTES-upstream.md`):
 
 - no extra byte after the header flags for UnityFS, and the 2019.4 block-info alignment done the way AssetStudio does it
 - `read_at_entry_range`, which decompresses only the blocks that cover a range of a bundle entry, for `.resS` streams
-- the buffer of a file read from a bundle is reserved up front, which stopped the process from growing by about 12 MB
-  every time the same bundle was opened and dropped again
+- the buffer of a file read from a bundle is reserved up front (at most 256 MiB, whatever the file's directory says),
+  which stopped the process from growing by about 12 MB every time the same bundle was opened and dropped again
+
+It is a git dependency, not a `[patch]` section: Cargo applies `[patch]` only in the root of a build, so a crate
+that depends on this one would not have got the fixes. Nothing has to be added to your `Cargo.toml` for it.
 
 With that, all 3,087 bundle files (2,250 in the base game, 837 in the DLC folders, which repeat base names) open, and every object decodes through the
 type tree stored in its own bundle. No field layout is hardcoded for the Unity version.
@@ -269,7 +287,8 @@ With the `bridge` feature, `src/bridge.rs` implements [rewrite-bridge](https://g
 To use the provider from another crate, depend on both, and keep **rewrite-bridge on the same tag this crate uses**
 (`v0.1.0`): with two versions of rewrite-bridge in one build, `Nocturne` implements a `Provider` that your code's
 `Provider` is not, and the compiler reports "multiple different versions of crate `rewrite_bridge`".
-`cargo tree -i rewrite-bridge` must show a single copy.
+`cargo tree -i rewrite-bridge` must show a single copy. No `[patch]` section is needed (rabex comes from the fork,
+see [Container layer](#container-layer)).
 
 ```toml
 [dependencies]
@@ -277,17 +296,25 @@ nocturne-unpack = { git = "https://github.com/patodois/nocturne-unpack", feature
 rewrite-bridge = { git = "https://github.com/patodois/rewrite-bridge", tag = "v0.1.0" }
 ```
 
-```rust
+```rust,no_run
 use rewrite_bridge::Provider;
-let nocturne = nocturne_unpack::bridge::Nocturne::open("~/Games/smt3hd")?;
-let demon = nocturne.load_animated("dvl0x01")?;
+
+fn main() -> Result<(), rewrite_bridge::BoxError> {
+    // The game folder: a leading ~/ is expanded; a &str, a String or a Path all do
+    let nocturne = nocturne_unpack::bridge::Nocturne::open("~/Games/smt3hd")?;
+    let demon = nocturne.load_animated("dvl0x01")?;
+    println!("{} nodes, {} clips", demon.model.nodes.len(), demon.animations.len());
+    Ok(())
+}
 ```
+
+This block is compiled by `cargo test --features bridge`, so it cannot drift from the API.
 
 ## Conformance
 
 `check-conformance` runs rewrite-bridge's conformance checker (`rewrite_bridge::conformance`) over the provider's output.
-Over all 232 demons (`--kind character --compare-load`, 8 s) it reports no errors. Over all 1,039 field prefabs
-(`--kind level`, 43 s, 2.2 GB) it reports two error codes, so that command exits with status 1:
+Over all 232 demons (`--kind character --compare-load`, 6 s) it reports no errors. Over all 1,039 field prefabs
+(`--kind level`, 28 s, 2.0 GB) it reports two error codes, so that command exits with status 1:
 
 - `geometry.winding_flipped`: 287 meshes in 37 field prefabs have 54 to 100 % of their triangles wound against their own
   stored normals (names such as `room*`, `kabeL*`, `Plane*` and `md_*`). The same conversion gives demons no such
@@ -333,16 +360,16 @@ All numbers are from one run on a 16 GB machine, one bundle open at a time; "pea
 - `census --decode`: all 3,087 bundle files (2,250 in the base game, 837 in the DLC folders, which repeat base names; the
   `Pc` manifest is not counted) open, every one with type trees, none failing; 15,930 `Texture2D` (Alpha8 10, DXT1
   10,742, DXT5 3,455, BC7 41, RGB24 1,179, RGBA32 503) and all 112,166 `Mesh` objects decode without a failure (peak
-  760 MB, 35 s). The classes of its 1,468,690 objects include 435,455
+  850 MB, 17 s). The classes of its 1,468,690 objects include 435,455
   GameObject, 408,793 Transform, 119,629 MeshRenderer, 3,749 SkinnedMeshRenderer, 35,323 Material, 12,552 AudioClip,
   9,594 AnimationClip, 8,568 TextAsset and 406 Shader; `nocturne-unpack census` prints them all.
 - `check`: 257 demon bundles: 232 load, 25 hold no model (a data table and sounds only), 0 failures. 532,268 triangles,
   529,738 vertices, 4,513 primitives, 327 skins, 2,808 materials, 2,017 textures and 1,733 clips with 246,607 channels
-  decode in 6.1 s with a peak of 350 MB. The materials use `Atlus/Atlus_CHAR` (2,786), `Atlus/AtlusMat` (10),
+  decode in 2.1 s with a peak of 350 MB. The materials use `Atlus/Atlus_CHAR` (2,786), `Atlus/AtlusMat` (10),
   `Atlus/Atlus_CHAR2` (3) and `Standard` (9); 116 have a tiled or offset `_MainTex`.
-- `check-bridge`: 232 of 232 demons load and validate as `AnimatedModel`s with textures (19 s, peak 450 MB), and all
+- `check-bridge`: 232 of 232 demons load and validate as `AnimatedModel`s with textures (7 s, peak 530 MB), and all
   1,039 listed field prefabs (of 1,066 in the 182 field bundles; the others have nothing to draw) load as a static model
-  and as a validated scene (46 s, peak 460 MB without textures): 99,774 meshes, 14.2 million vertices, 66,425 scene
+  and as a validated scene (33 s, peak 480 MB without textures): 99,774 meshes, 14.2 million vertices, 66,425 scene
   models placed by 66,984 instances.
 - **Cross-checks** against UnityPy 1.25.4, which reads the same bundles independently, for the vertex count, first vertex
   (position, normal, UV, bone weights and indices), first indices and bind pose of a skinned mesh, a bone's local
@@ -356,8 +383,9 @@ All numbers are from one run on a 16 GB machine, one bundle open at a time; "pea
   below the root, a clip that also animates the node that carries a skinned mesh). A sample of 44 field prefabs passes too.
 - Renders, made with three.js in headless Chromium: demons in the bind pose and in the middle of a clip, and a field.
   They are not in the repository.
-- `cargo test --release --features bridge` with `NOCTURNE_GAME_DIR` set: 32 unit tests, 6 tests against the install and
-  7 against the install through the bridge (5 provider, 2 conformance); without the variable only the unit tests run. `cargo clippy --all-targets -- -D warnings` is clean,
+- `cargo test --release --features bridge` with `NOCTURNE_GAME_DIR` set: 50 unit tests, 9 tests against the install (three
+  of them run the command line), 8 against the install through the bridge (6 provider, 2 conformance) and 2 doctests (this
+  file's Rust code and `Nocturne::open`); without the variable only the unit tests and doctests run. `cargo clippy --all-targets -- -D warnings` is clean,
   with and without the `bridge` feature.
 
 ## Format notes
@@ -393,6 +421,12 @@ and `src/prefab.rs` describe the layouts.
 - **Meshes.** Vertex streams start 16-byte aligned; `dimension` carries the component count in its low four bits (a
   half-float normal channel has dimension `0x34`); bone indices are `UInt32` and weights `Float`, two or four per
   vertex, or indices alone for a single bone. Index buffers are read as 16-bit (32-bit is supported), sub-meshes are triangle lists, and no mesh uses mesh compression.
+- **Quaternion curves.** In the 94,806 rotation channels of the demons no two successive keys lie in opposite hemispheres
+  (`q` and `-q`), as Unity's importer keeps its quaternion keys continuous. The tool negates such a key (and its
+  tangents) if it ever meets one, so that every player interpolates the short way, and counts it in the report.
+- **Static batching.** None of the 99,271 mesh and skinned mesh renderers of the demons and fields is statically batched
+  (`m_StaticBatchInfo.subMeshCount` is 0 in all). Unity bakes the world transform into the vertices of a batched mesh, so
+  such a renderer would have to be placed at the origin and not at its node; the range of sub-meshes is read as stored.
 - **Textures.** Row 0 is the bottom row. Only the largest level, which is the first, is read.
 
 ## Left out
@@ -406,8 +440,9 @@ Counts come from `check` (all 257 demon bundles, 232 with a model) and `check --
   flags (3), renderer material properties (190) and one more kind of renderer property (67). Bindings whose path
   is not in the prefab's hierarchy (2,422) are skipped.
 - Euler rotation curves (3,720 channels in 25 demons) are written as quaternion keys. They are exact at the game's keys
-  and between them within 0.05 degrees (median 0.04, 99% within 0.105), found by adding 271,216 keys; in 704 channels
-  an interval still misses that after five halvings, the worst by 0.33 degrees. Mecanim interpolates the angles and
+  and between them within 0.05 degrees (the largest error of a channel has a median of 0.049 and 99% of the channels are
+  within 0.102), found by adding 222,265 keys; in 146 channels an interval still misses that after five halvings, the worst by
+  0.33 degrees. Mecanim interpolates the angles and
   converts them at every instant, which is not a polynomial in the quaternion, so this cannot be exact.
 - Rotation keys are normalised (glTF requires unit quaternions), which moves them by the amount the stored ones differ
   from unit length. One jump inside a smooth curve is written one float step early. Keys outside a clip's start and
@@ -448,7 +483,7 @@ Counts come from `check` (all 257 demon bundles, 232 with a model) and `check --
 ## Credits
 
 - [rabex](https://github.com/jakobhellermann/RustyAssetBundleEXtractor) by Rudolf Kolbe and Jakob Hellermann (MIT or
-  Apache-2.0): bundle and serialized file parsing, type tree deserialization. Vendored with the three changes above.
+  Apache-2.0): bundle and serialized file parsing, type tree deserialization. Used through our fork with the three changes above.
 - [AssetStudio](https://github.com/Perfare/AssetStudio) and [AssetRipper](https://github.com/AssetRipper/AssetRipper)
   (both MIT): their public readers were the reference for the semantics of the streamed clip format, generic bindings,
   vertex stream layout and the 2019.4 bundle header. No code was copied.
@@ -466,4 +501,4 @@ you use this tool. Use it for reading and studying game data only; do not redist
 
 ## License
 
-Licensed under either of MIT or Apache-2.0, at your option. `vendor/rabex` keeps its own licenses.
+Licensed under either of MIT or Apache-2.0, at your option. rabex keeps its own licenses.

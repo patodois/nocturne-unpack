@@ -13,3 +13,8 @@ pub mod rig;
 pub mod texture;
 pub mod transform;
 pub mod unity;
+
+// The code in the README is compiled by `cargo test --features bridge`
+#[cfg(all(doctest, feature = "bridge"))]
+#[doc = include_str!("../README.md")]
+struct ReadmeDoctests;
