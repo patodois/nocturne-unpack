@@ -15,6 +15,34 @@ This project contains no game code or game data, and nothing extracted from the 
 dumps, screenshots or fixtures. It only reads files from a copy of the game you already have installed, so you need your
 own copy. Tests that need the game skip themselves when it is not there.
 
+## Download
+
+Programs built for each release are on the [Releases page](https://github.com/patodois/nocturne-unpack/releases). Pick the archive for your system:
+
+| System | Archive |
+|--------|---------|
+| macOS, Apple silicon | `nocturne-unpack-<tag>-macos-arm64.tar.gz` |
+| macOS, Intel | `nocturne-unpack-<tag>-macos-x86_64.tar.gz` |
+| Linux, x86_64 (glibc 2.35 or newer) | `nocturne-unpack-<tag>-linux-x86_64.tar.gz` |
+| Windows, x86_64 | `nocturne-unpack-<tag>-windows-x86_64.zip` |
+
+Each archive holds the program, this README, both license files and an `INSTALL.txt`. `SHA256SUMS` on the release page has
+the checksum of every archive (`shasum -a 256 -c SHA256SUMS` on macOS, `sha256sum -c SHA256SUMS` on Linux,
+`Get-FileHash` on Windows). They are built with the `bridge` feature, so the rewrite-bridge provider is included.
+
+**The binaries contain no game data.** They are the program only; it reads the files of a copy of Shin Megami Tensei III Nocturne HD Remaster that you already have
+installed.
+
+They are not code-signed, so the first run may be blocked:
+
+- **macOS (Gatekeeper)**: a file downloaded in a browser is quarantined, and macOS refuses to open it ("Apple could not
+  verify ..."). Remove the mark once, from the folder you extracted to: `xattr -d com.apple.quarantine ./nocturne-unpack`. Or open
+  System Settings > Privacy & Security and press "Open Anyway" after the first refusal.
+- **Windows (SmartScreen)**: "Windows protected your PC" appears the first time. Choose "More info", then "Run anyway". Or
+  right-click the downloaded `.zip`, open Properties and tick "Unblock" before you extract it.
+
+To build it yourself instead, see [Build](#build).
+
 ## What you need
 
 - **Your own copy of the game: the Steam build for Windows** (Steam app 1413480). The files are the same on every
