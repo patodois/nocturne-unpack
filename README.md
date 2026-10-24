@@ -1,5 +1,8 @@
 # nocturne-unpack
 
+[![rewrite-bridge on crates.io](https://img.shields.io/crates/v/rewrite-bridge.svg?label=rewrite-bridge)](https://crates.io/crates/rewrite-bridge)
+[![rewrite-bridge docs](https://img.shields.io/docsrs/rewrite-bridge?label=docs.rs)](https://docs.rs/rewrite-bridge)
+
 A small Rust crate and command line tool that reads the game data of Shin Megami Tensei III Nocturne HD Remaster
 (the Steam build for Windows) from your own install:
 
@@ -69,8 +72,8 @@ To build it yourself instead, see [Build](#build).
   `export NOCTURNE_GAME_DIR=<folder>`; `--game` wins over the variable, which wins over the default. A leading `~/`
   is expanded. `--game` also accepts the `smt3hd_Data/StreamingAssets/PC` folder itself.
 - **Rust**, the stable toolchain from [rustup.rs](https://rustup.rs) (edition 2021; written and tested with 1.99), and
-  `git`, because Cargo fetches [rabex](#container-layer) from our fork on GitHub, and the `bridge` feature fetches
-  [rewrite-bridge](https://github.com/patodois/rewrite-bridge) too.
+  `git`, because Cargo fetches [rabex](#container-layer) from our fork on GitHub (the `bridge` feature downloads
+  [rewrite-bridge](https://crates.io/crates/rewrite-bridge) from crates.io).
   A clean release build takes about 11 seconds on an M-series Mac with 4 jobs (`cargo build --release -j 4`), and the
   `bridge` feature adds about 5 more.
 - **Disk and memory.** Nothing is extracted or copied; the game folder is about 12 GB. Each command opens one bundle at
@@ -300,7 +303,7 @@ with the most renderers is the default) and everything it uses:
 ## rewrite-bridge
 
 With the `bridge` feature, `src/bridge.rs` implements [rewrite-bridge](https://github.com/patodois/rewrite-bridge)'s
-`Provider` (pinned to rewrite-bridge `v0.1.0`), like wf-unpack's.
+`Provider` (rewrite-bridge `0.2`, from [crates.io](https://crates.io/crates/rewrite-bridge)), like wf-unpack's.
 
 - `list` returns every demon (id is the bundle name, `dvl0x01`, kind Character) and every field prefab that has
   something to draw (`f012/f012_002`, kind Level); prefabs of only transforms are left out.
@@ -312,16 +315,18 @@ With the `bridge` feature, `src/bridge.rs` implements [rewrite-bridge](https://g
 - The bridge has no place for texture samplers and tiling, vertex colours or a second UV set. Lights and cameras are not
   read.
 
-To use the provider from another crate, depend on both, and keep **rewrite-bridge on the same tag this crate uses**
-(`v0.1.0`): with two versions of rewrite-bridge in one build, `Nocturne` implements a `Provider` that your code's
-`Provider` is not, and the compiler reports "multiple different versions of crate `rewrite_bridge`".
+To use the provider from another crate, depend on both. Every crate in one build has to end up with the same copy of
+rewrite-bridge, or `Nocturne` implements a `Provider` that your code's `Provider` is not, and the compiler reports
+"multiple different versions of crate `rewrite_bridge`". From crates.io Cargo does this for you: every `0.2`
+requirement (this crate asks for `0.2.1`, your `"0.2"` accepts it) resolves to one 0.2.x release and is built once.
+A requirement on another minor line (`"0.3"`) would be a second copy, so stay on the same `0.x` as this crate.
 `cargo tree -i rewrite-bridge` must show a single copy. No `[patch]` section is needed (rabex comes from the fork,
 see [Container layer](#container-layer)).
 
 ```toml
 [dependencies]
 nocturne-unpack = { git = "https://github.com/patodois/nocturne-unpack", features = ["bridge"] }   # add rev = "<commit>" to pin it
-rewrite-bridge = { git = "https://github.com/patodois/rewrite-bridge", tag = "v0.1.0" }
+rewrite-bridge = "0.2"
 ```
 
 ```rust,no_run
