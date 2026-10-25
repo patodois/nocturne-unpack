@@ -133,38 +133,28 @@ pub fn decode_pixels(format: i32, w: usize, h: usize, data: &[u8]) -> Result<Ima
             }
         }
         _ => {
-            type Decoder = fn(&[u8], usize, usize, &mut [u32]) -> Result<(), &'static str>;
-            let decode: Decoder = match format {
-                FMT_DXT1 => texture2ddecoder::decode_bc1,
-                FMT_DXT5 => texture2ddecoder::decode_bc3,
-                _ => texture2ddecoder::decode_bc7,
+            let (bc, block_bytes) = match format {
+                FMT_DXT1 => (bcn_decode::Format::Bc1, 8),
+                FMT_DXT5 => (bcn_decode::Format::Bc3, 16),
+                _ => (bcn_decode::Format::Bc7, 16),
             };
-            // The decoder works on whole blocks, so a band of block rows at a time (blocks are
-            // stored row by row) keeps the scratch buffer small for big textures
-            let block_bytes = if format == FMT_DXT1 { 8 } else { 16 };
-            let bw = w.div_ceil(4) * 4;
+            // The decoder works on bands of block rows (blocks are stored row by row), so the
+            // scratch buffer stays small for big textures
+            let row_bytes = w.div_ceil(4) * block_bytes;
             let block_rows = h.div_ceil(4);
             const BAND: usize = 16;
-            let mut pixels = vec![0u32; bw * BAND * 4];
+            let mut band = vec![0u8; stride * BAND * 4];
             let mut r0 = 0;
             while r0 < block_rows {
                 let rows = BAND.min(block_rows - r0);
-                let src = &data[r0 * (bw / 4) * block_bytes..(r0 + rows) * (bw / 4) * block_bytes];
-                decode(src, bw, rows * 4, &mut pixels[..bw * rows * 4])
+                let y0 = r0 * 4;
+                let band_h = (rows * 4).min(h - y0);
+                let src = &data[r0 * row_bytes..(r0 + rows) * row_bytes];
+                let out = &mut band[..stride * band_h];
+                bcn_decode::decode_rgba8(bc, src, w, band_h, out)
                     .map_err(|e| anyhow::anyhow!("{e}"))?;
-                for (i, row) in pixels[..bw * rows * 4].chunks_exact(bw).enumerate() {
-                    let y = r0 * 4 + i;
-                    if y >= h {
-                        break;
-                    }
-                    put(
-                        y,
-                        &mut row[..w].iter().map(|p| {
-                            // BGRA in little-endian order
-                            let [b, g, r, a] = p.to_le_bytes();
-                            [r, g, b, a]
-                        }),
-                    );
+                for (i, row) in out.chunks_exact(stride).enumerate() {
+                    put(y0 + i, &mut row.as_chunks::<4>().0.iter().copied());
                 }
                 r0 += rows;
             }
@@ -224,6 +214,45 @@ mod tests {
         assert!(red(67).abs_diff(want(0)) <= 1);
         assert!(red(0).abs_diff(want(16)) <= 1);
         assert!(red(67 - 4 * 16).abs_diff(want(16)) <= 1);
+    }
+
+    #[test]
+    fn dxt5_and_bc7_crop_odd_sizes_and_flip_rows() {
+        // 5x6 = 2x2 blocks, each solid with a different red (5-bit values 8, 16, 24 and 31)
+        let reds = [8u16, 16, 24, 31];
+        let mut data = Vec::new();
+        for r in reds {
+            let c = r << 11;
+            data.extend_from_slice(&[0xFF, 0xFF, 0, 0, 0, 0, 0, 0]); // alpha 255, 255
+            data.extend_from_slice(&c.to_le_bytes());
+            data.extend_from_slice(&c.to_le_bytes());
+            data.extend_from_slice(&[0; 4]);
+        }
+        let img = decode_pixels(FMT_DXT5, 5, 6, &data).unwrap();
+        assert_eq!(img.rgba.len(), 5 * 6 * 4);
+        let red = |x: usize, y: usize| img.rgba[(y * 5 + x) * 4];
+        // The first data row is the bottom of the image: block row 0 (blocks 0 and 1) covers the
+        // image rows 5 to 2, block row 1 (blocks 2 and 3) only rows 1 and 0 (cropped from 4 to 2)
+        let widen = |v: u16| ((v << 3) | (v >> 2)) as u8;
+        assert_eq!(red(0, 5), widen(8));
+        assert_eq!(red(4, 5), widen(16));
+        assert_eq!(red(0, 2), widen(8));
+        assert_eq!(red(0, 1), widen(24));
+        assert_eq!(red(4, 0), widen(31));
+        assert_eq!(img.rgba[3], 255);
+
+        // BC7 mode 6 with equal endpoints: R 127 and A 127 with the P-bit 1 give 255 and G = B = 0
+        // with the P-bit give 1, since the P-bit is the lowest bit of every channel
+        let mut v: u128 = 1 << 6;
+        v |= 127 << 7; // R0
+        v |= 127 << 14; // R1
+        v |= 127 << 49; // A0
+        v |= 127 << 56; // A1
+        v |= 1 << 63; // P-bit of endpoint 0
+        v |= 1 << 64; // P-bit of endpoint 1
+        let img = decode_pixels(FMT_BC7, 3, 2, &v.to_le_bytes()).unwrap();
+        assert_eq!(img.rgba.len(), 3 * 2 * 4);
+        assert!(img.rgba.chunks(4).all(|p| p == [255, 1, 1, 255]));
     }
 
     #[test]

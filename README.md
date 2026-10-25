@@ -522,7 +522,7 @@ Counts come from `check` (all 257 demon bundles, 232 with a model) and `check --
   vertex stream layout and the 2019.4 bundle header. No code was copied.
 - [UnityPy](https://github.com/K0lb3/UnityPy) was used as an independent oracle to cross-check numbers; it is not part of
   this project.
-- [texture2ddecoder](https://crates.io/crates/texture2ddecoder) decodes the block-compressed textures,
+- bcn-decode (our own decoder, written from the public specifications) decodes the block-compressed textures,
   [png](https://crates.io/crates/png) writes PNGs.
 
 ## Disclaimer

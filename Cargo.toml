@@ -17,7 +17,8 @@ memmap2 = "0.9"
 rabex = { git = "https://github.com/patodois/RustyAssetBundleEXtractor", rev = "56dd8a4d8d5048b6ee7664eadc89d98343c66002", default-features = false, features = ["compression-lz4", "compression-lzma"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
-texture2ddecoder = "0.1.2"
+# Block-compression texture decoder (BC1 to BC7), written from the public specifications
+bcn-decode = { path = "../bcn-decode" }
 png = "0.18.1"
 # Shared model types for crossovers with other game rewrites
 rewrite-bridge = { version = "0.2.1", optional = true }
