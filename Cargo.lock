@@ -67,6 +67,8 @@ checksum = "330a5ed07fa54e4702c9d6c4174f74427fc0ef6e214bbd677ae50a5099946470"
 [[package]]
 name = "bcn-decode"
 version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3a3d5cf71fc14b37654892fc02d25b45ddca03d4245e352510e3c55bdc5cda1f"
 
 [[package]]
 name = "bitflags"
@@ -343,7 +345,7 @@ dependencies = [
 
 [[package]]
 name = "nocturne-unpack"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "bcn-decode",

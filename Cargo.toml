@@ -1,6 +1,6 @@
 [package]
 name = "nocturne-unpack"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 description = "Reader for the Unity asset bundles of Shin Megami Tensei III Nocturne HD Remaster"
 license = "MIT OR Apache-2.0"
@@ -18,7 +18,7 @@ rabex = { git = "https://github.com/patodois/RustyAssetBundleEXtractor", rev = "
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
 # Block-compression texture decoder (BC1 to BC7), written from the public specifications
-bcn-decode = { path = "../bcn-decode" }
+bcn-decode = "0.1.0"
 png = "0.18.1"
 # Shared model types for crossovers with other game rewrites
 rewrite-bridge = { version = "0.2.1", optional = true }

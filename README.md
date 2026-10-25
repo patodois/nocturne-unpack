@@ -412,6 +412,9 @@ All numbers are from one run on a 16 GB machine, one bundle open at a time; "pea
   against a double). On `dvl0x07`, where the clip is made of Euler curves, the written channel is 0.003 and 0.001 degrees
   from the true curve at two times between keys. Textures of all six formats are pixel-identical to Pillow's independent
   decoders (DXT1, DXT5, BC7) and to the raw data (RGB24, RGBA32, Alpha8).
+- bcn-decode 0.1.0 from crates.io (25 October 2026, replacing texture2ddecoder): all 15,930 `Texture2D` of the base game
+  and the DLC folders decode to the same RGBA pixels as before, and the 232 demon exports and 3 field exports are
+  byte-identical; `check`, `check --kind fields`, `check-bridge` and `check-conformance` print the same.
 - Of the 234 demon files exported before the duplicate names were folded into 232 (not repeated since), every one passes the Khronos glTF validator with no errors (warnings only: a skinned mesh
   below the root, a clip that also animates the node that carries a skinned mesh). A sample of 44 field prefabs passes too.
 - Renders, made with three.js in headless Chromium: demons in the bind pose and in the middle of a clip, and a field.
@@ -522,8 +525,12 @@ Counts come from `check` (all 257 demon bundles, 232 with a model) and `check --
   vertex stream layout and the 2019.4 bundle header. No code was copied.
 - [UnityPy](https://github.com/K0lb3/UnityPy) was used as an independent oracle to cross-check numbers; it is not part of
   this project.
-- bcn-decode (our own decoder, written from the public specifications) decodes the block-compressed textures,
-  [png](https://crates.io/crates/png) writes PNGs.
+- [bcn-decode](https://crates.io/crates/bcn-decode) (ours, written from the public specifications: BC1 to BC7)
+  decodes the block-compressed textures, [png](https://crates.io/crates/png) writes PNGs. The earlier build used
+  texture2ddecoder, which is no longer a dependency.
+- Every dependency comes from crates.io except rabex: its fork stays a git dependency for now (see
+  [Container layer](#container-layer)), until its three changes are in a release. That is also why this crate is not
+  on crates.io yet.
 
 ## Disclaimer
 
