@@ -107,7 +107,7 @@ impl Bundle {
     /// `(path_id, class_id)` of every object.
     pub fn objects(&self) -> Vec<(i64, i32)> {
         self.file
-            .objects
+            .objects()
             .iter()
             .map(|o| (o.path_id, o.class_id.0))
             .collect()
@@ -116,7 +116,7 @@ impl Bundle {
     /// Path ids of the objects of one class.
     pub fn objects_of(&self, class_id: i32) -> Vec<i64> {
         self.file
-            .objects
+            .objects()
             .iter()
             .filter(|o| o.class_id.0 == class_id)
             .map(|o| o.path_id)
