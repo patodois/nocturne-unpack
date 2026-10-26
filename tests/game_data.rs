@@ -247,3 +247,145 @@ fn a_bundle_without_a_prefab_is_an_error_not_a_panic() {
         assert!(err.contains("no prefab"), "{err}");
     }
 }
+
+/// Counts the triangles that wind with and against their own vertex normals: the cross product
+/// of two edges against the sum of the three normals, which is what rewrite-bridge's
+/// `geometry.winding_flipped` judges (triangles with no area or an undecided angle are skipped).
+fn orientation(positions: &[[f32; 3]], normals: &[[f32; 3]], indices: &[u32]) -> (usize, usize) {
+    let (mut with, mut against) = (0, 0);
+    for t in indices.as_chunks::<3>().0 {
+        let p = t.map(|i| positions[i as usize].map(f64::from));
+        let sub = |a: [f64; 3], b: [f64; 3]| [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
+        let (e1, e2) = (sub(p[1], p[0]), sub(p[2], p[0]));
+        let cross = [
+            e1[1] * e2[2] - e1[2] * e2[1],
+            e1[2] * e2[0] - e1[0] * e2[2],
+            e1[0] * e2[1] - e1[1] * e2[0],
+        ];
+        let mut n = [0.0f64; 3];
+        for &i in t {
+            for (k, v) in n.iter_mut().enumerate() {
+                *v += f64::from(normals[i as usize][k]);
+            }
+        }
+        let len = |v: [f64; 3]| (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
+        let scale = len(cross) * len(n);
+        if scale.is_nan() || scale <= 1e-12 {
+            continue;
+        }
+        let cos = (cross[0] * n[0] + cross[1] * n[1] + cross[2] * n[2]) / scale;
+        if cos > 0.01 {
+            with += 1;
+        } else if cos < -0.01 {
+            against += 1;
+        }
+    }
+    (with, against)
+}
+
+/// `check-conformance --kind level` exits with status 1 because of `geometry.winding_flipped` in 37
+/// field prefabs. The converted triangles must say the same as the Unity mesh they came from, so
+/// that the finding is the game's data (a mesh stored against its normals) and not the X mirror
+/// or the reversed indices. `f003` holds `md_hoji_01_01`, 120 triangles all against their normals.
+#[test]
+fn field_meshes_keep_their_winding_against_normals_through_the_conversion() {
+    let Some(install) = install() else { return };
+    let mut against_in_game = 0;
+    for name in ["f003", "f004", "f023"] {
+        let b = Bundle::open(&install.resolve(name).unwrap()).unwrap();
+        let asset = prefab::load(
+            &install,
+            &b,
+            prefab::Which::All,
+            &Options {
+                textures: false,
+                animations: false,
+            },
+        )
+        .unwrap();
+        let mut meshes: std::collections::HashMap<i64, mesh::MeshData> = Default::default();
+        let mut checked = 0;
+        for p in &asset.primitives {
+            if p.normals.is_empty() {
+                continue;
+            }
+            let raw = meshes.entry(p.mesh_id).or_insert_with(|| {
+                let m: Mesh = b.read(p.mesh_id).unwrap();
+                mesh::decode(&b, &m).unwrap()
+            });
+            let sub: usize = p.name.rsplit('_').next().unwrap().parse().unwrap();
+            let unity = orientation(&raw.positions, &raw.normals, &raw.submeshes[sub]);
+            let bridge = orientation(&p.positions, &p.normals, &p.indices);
+            assert_eq!(bridge, unity, "{name}: {}", p.name);
+            against_in_game += usize::from(unity.1 > unity.0);
+            checked += 1;
+        }
+        assert!(checked > 20, "{name}: {checked} primitives with normals");
+    }
+    // md_hoji_01_01 in f003, the room meshes of f023
+    assert!(
+        against_in_game >= 4,
+        "{against_in_game} meshes stored against their normals"
+    );
+}
+
+/// `geometry.non_finite` in `f004/f004_001`: the smoke meshes store NaN in two normals each, as
+/// 32-bit floats. The check reads the bytes itself, so it does not depend on the decoder.
+#[test]
+fn the_smoke_meshes_of_f004_store_nan_normals() {
+    let Some(install) = install() else { return };
+    let b = Bundle::open(&install.resolve("f004").unwrap()).unwrap();
+    let mut smoke = 0;
+    for id in b.objects_of(class::MESH) {
+        let m: Mesh = b.read(id).unwrap();
+        if !m.m_Name.starts_with("md_01all_smoke_new") {
+            continue;
+        }
+        let normal = m.m_VertexData.m_Channels[mesh::CH_NORMAL];
+        assert_eq!(
+            (normal.format, normal.dimension & 0x0F),
+            (0, 3),
+            "{}: float32 x 3",
+            m.m_Name
+        );
+        let data = if m.m_VertexData.m_DataSize.is_empty() {
+            b.read_stream(&m.m_StreamData).unwrap()
+        } else {
+            m.m_VertexData.m_DataSize.clone()
+        };
+        // Stream 0 starts at byte 0; its stride is the sum of its channels' sizes
+        let stride: usize = m
+            .m_VertexData
+            .m_Channels
+            .iter()
+            .filter(|c| c.stream == 0 && c.dimension & 0x0F > 0)
+            .map(|c| {
+                (c.dimension & 0x0F) as usize
+                    * if c.format == 0 {
+                        4
+                    } else if c.format == 2 {
+                        1
+                    } else {
+                        2
+                    }
+            })
+            .sum();
+        let nan = (0..m.m_VertexData.m_VertexCount as usize)
+            .filter(|v| {
+                let at = v * stride + normal.offset as usize;
+                (0..3).any(|k| {
+                    let bits =
+                        u32::from_le_bytes(data[at + 4 * k..at + 4 * k + 4].try_into().unwrap());
+                    bits & 0x7F80_0000 == 0x7F80_0000 && bits & 0x007F_FFFF != 0
+                })
+            })
+            .count();
+        assert_eq!(
+            nan, 2,
+            "{}: vertices with a NaN normal in the file",
+            m.m_Name
+        );
+        smoke += 1;
+    }
+    assert_eq!(smoke, 7);
+}

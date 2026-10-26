@@ -163,7 +163,8 @@ nocturne-unpack check-bridge --kind demons --textures
 
 # The rewrite-bridge conformance checker on what the provider returns (options as in its README, plus
 # --game and --no-textures); --kind character for the demons, --kind level for field prefabs.
-# Exit status 1 means an asset has an error, which is the case for some field prefabs (see Conformance)
+# Exit status 1 means an asset has an error, which is the case for some field prefabs (see Conformance);
+# --allow CODE leaves a finding out
 nocturne-unpack check-conformance --kind character --compare-load
 nocturne-unpack check-conformance --id f012/f012_002 -v
 
@@ -350,10 +351,20 @@ Over all 232 demons (`--kind character --compare-load`, 6 s) it reports no error
 (`--kind level`, 28 s, 2.0 GB) it reports two error codes, so that command exits with status 1:
 
 - `geometry.winding_flipped`: 287 meshes in 37 field prefabs have 54 to 100 % of their triangles wound against their own
-  stored normals (names such as `room*`, `kabeL*`, `Plane*` and `md_*`). The same conversion gives demons no such
-  finding, so these are the source meshes; the provider does not guess which side is meant to face out.
-- `geometry.non_finite`: 7 meshes of `f004/f004_001` (`md_01all_smoke_new*`) have NaN or infinite normals in 2 vertices
-  each.
+  stored normals (names such as `room*`, `kabeL*`, `Plane*` and `md_*`). They are the game's data, not the conversion:
+  for every primitive of `f003`, `f004` and `f023` the count of triangles with and against their normals is the same in the
+  Unity mesh and in the converted one (a test; it fails if the reversed indices are taken out), and the 232 demons give no such
+  finding. The 287 split by their material: 237 have the keyword `LIGHTOFF_USE` (their material switches the
+  lighting off), 48 are the lit meshes `room10`, `room27` and `room44` of `f023` and `f023m`, one is a one-triangle mesh (`aa_0` in `f662`), and one has `_Cull` 0, two-sided (`md_hoji_01_01`
+  in `f003`). The provider does not guess which side is meant to face out.
+- `geometry.non_finite`: 7 meshes of `f004/f004_001` (`md_01all_smoke_new*`) have NaN normals in 2 vertices each. The file
+  stores them as 32-bit floats with those bit patterns (a test reads the bytes itself), next to positions of 1e11 to 1e12 and
+  an instance scale of 1.5e-12 (`scene.instance_scale_extreme`): the smoke is stored huge and scaled down.
+
+**Exit status.** It is the checker's, the same as in `hytale-unpack` and `mc-unpack`, which pass their arguments to the same
+function: 0 when no asset has an error, 1 when one does (a warning only with `--strict`), 2 for a usage error. So
+`--kind level` exits 1 because of the two codes above, which are the game's data. `--allow CODE` (repeatable) leaves a code out;
+with `--allow geometry.winding_flipped --allow geometry.non_finite` the 1,039 field prefabs exit 0 (the warnings below remain).
 
 What it reports besides is the game's data, not the provider, and stays as it is (`-v` lists it). Counts are for the
 demons unless a field prefab is named:
@@ -419,7 +430,7 @@ All numbers are from one run on a 16 GB machine, one bundle open at a time; "pea
   below the root, a clip that also animates the node that carries a skinned mesh). A sample of 44 field prefabs passes too.
 - Renders, made with three.js in headless Chromium: demons in the bind pose and in the middle of a clip, and a field.
   They are not in the repository.
-- `cargo test --release --features bridge` with `NOCTURNE_GAME_DIR` set: 50 unit tests, 9 tests against the install (three
+- `cargo test --release --features bridge` with `NOCTURNE_GAME_DIR` set: 50 unit tests, 11 tests against the install (three
   of them run the command line), 8 against the install through the bridge (6 provider, 2 conformance) and 2 doctests (this
   file's Rust code and `Nocturne::open`); without the variable only the unit tests and doctests run. `cargo clippy --all-targets -- -D warnings` is clean,
   with and without the `bridge` feature.
