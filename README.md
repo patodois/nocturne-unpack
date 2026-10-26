@@ -71,9 +71,10 @@ To build it yourself instead, see [Build](#build).
   Point the tool at it with `--game <folder>` on a command, or once for the whole shell with
   `export NOCTURNE_GAME_DIR=<folder>`; `--game` wins over the variable, which wins over the default. A leading `~/`
   is expanded. `--game` also accepts the `smt3hd_Data/StreamingAssets/PC` folder itself.
-- **Rust**, the stable toolchain from [rustup.rs](https://rustup.rs) (edition 2021; written and tested with 1.99), and
-  the [unity-bundle](#container-layer) crate checked out next to this repository (`../unity-bundle`) until it is
-  published (the `bridge` feature downloads [rewrite-bridge](https://crates.io/crates/rewrite-bridge) from crates.io).
+- **Rust**, the stable toolchain from [rustup.rs](https://rustup.rs) (edition 2021; 1.88 or newer, which is what
+  [bcn-decode](https://crates.io/crates/bcn-decode) asks for; tested with 1.88.0 and 1.99). Every dependency comes from
+  crates.io, [unity-bundle](#container-layer) and (with the `bridge` feature)
+  [rewrite-bridge](https://crates.io/crates/rewrite-bridge) included, so `git` is not needed to build.
   A clean release build takes about 11 seconds on an M-series Mac with 4 jobs (`cargo build --release -j 4`), and the
   `bridge` feature adds about 5 more.
 - **Disk and memory.** Nothing is extracted or copied; the game folder is about 12 GB. Each command opens one bundle at
@@ -246,13 +247,16 @@ file, so it counts the copies.
 
 ## Container layer
 
-The bundles are read with `unity-bundle`, a crate of ours (MIT OR Apache-2.0) written for these files: UnityFS bundles
-(container format version 6), serialized files of format versions 17 and 21 (the game ships both: 29 bundles were written
-by Unity 2018.4.13f1, the rest by 2019.4), LZ4 blocks, ranged reads of the `.resS` streams, and a serde deserializer that
-reads objects through the type trees stored in the bundles. It replaces [rabex](https://github.com/jakobhellermann/RustyAssetBundleEXtractor)
-and our fork of it, and was compared with that fork as a black box on every bundle of the game: identical decompressed
-blocks, type trees, and parsed values (see its `tools/oracle/REPORT.txt`). `Cargo.toml` has it as a path dependency
-(`../unity-bundle`) until it is published, so a crate that depends on this one needs a checkout of it as well.
+The bundles are read with [unity-bundle](https://crates.io/crates/unity-bundle) 0.1.0 ([source](https://github.com/patodois/unity-bundle);
+ours, MIT OR Apache-2.0), written for these files: UnityFS bundles (container format version 6), serialized files of
+format versions 17 and 21 (the game ships both: 29 bundles were written by Unity 2018.4.13f1, the rest by 2019.4), LZ4
+blocks, ranged reads of the `.resS` streams (only the compression blocks that cover a range are decompressed), and a serde
+deserializer that reads objects through the type trees stored in the bundles. Earlier versions of this tool (0.1.x)
+read the bundles with [rabex](https://github.com/jakobhellermann/RustyAssetBundleEXtractor) through a fork of ours with
+three small changes (`NOTES-upstream.md` keeps their story). unity-bundle follows rabex's design as its reference and
+was compared with that fork as a black box on every bundle of the game: identical decompressed blocks, type trees and
+parsed values (see its README). Nothing has to be added to your `Cargo.toml` for it, and there is no
+git dependency and no `[patch]` section.
 
 With that, all 3,087 bundle files (2,250 in the base game, 837 in the DLC folders, which repeat base names) open, and every object decodes through the
 type tree stored in its own bundle. No field layout is hardcoded for the Unity version.
@@ -417,11 +421,18 @@ All numbers are from one run on a 16 GB machine, one bundle open at a time; "pea
 - bcn-decode 0.1.0 from crates.io (25 October 2026, replacing texture2ddecoder): all 15,930 `Texture2D` of the base game
   and the DLC folders decode to the same RGBA pixels as before, and the 232 demon exports and 3 field exports are
   byte-identical; `check`, `check --kind fields`, `check-bridge` and `check-conformance` print the same.
+- unity-bundle 0.1.0 from crates.io (25 October 2026, replacing the rabex fork; version 0.2.0 of this tool): against a
+  build of 0.1.1 (rabex), the RGBA pixels of all 15,930 `Texture2D` and the decoded data of all 112,166 `Mesh` objects
+  hash the same, the `.glb` files of the 232 demons with a model and of the 162 field bundles with a prefab to draw
+  (`--all-prefabs`) are byte-identical, and the exports of the other 45 bundles fail in both with the same status; `list`,
+  `check`, `check --kind fields`, `check-bridge`, `check-conformance` (demons with `--compare-load`, and fields) and
+  `census --decode` print the same except for times and peak memory (the largest, `check-conformance --kind level`, peaks
+  at 2.0 GB in both). The tests pass with Rust 1.88.0 as well as 1.99.
 - Of the 234 demon files exported before the duplicate names were folded into 232 (not repeated since), every one passes the Khronos glTF validator with no errors (warnings only: a skinned mesh
   below the root, a clip that also animates the node that carries a skinned mesh). A sample of 44 field prefabs passes too.
 - Renders, made with three.js in headless Chromium: demons in the bind pose and in the middle of a clip, and a field.
   They are not in the repository.
-- `cargo test --release --features bridge` with `NOCTURNE_GAME_DIR` set: 50 unit tests, 11 tests against the install (three
+- `cargo test --release --features bridge` with `NOCTURNE_GAME_DIR` set: 51 unit tests, 11 tests against the install (three
   of them run the command line), 8 against the install through the bridge (6 provider, 2 conformance) and 2 doctests (this
   file's Rust code and `Nocturne::open`); without the variable only the unit tests and doctests run. `cargo clippy --all-targets -- -D warnings` is clean,
   with and without the `bridge` feature.
@@ -521,8 +532,10 @@ Counts come from `check` (all 257 demon bundles, 232 with a model) and `check --
 ## Credits
 
 - [rabex](https://github.com/jakobhellermann/RustyAssetBundleEXtractor) by Rudolf Kolbe and Jakob Hellermann (MIT or
-  Apache-2.0) read the bundles of earlier versions of this tool, through our fork with three changes, and was the oracle
-  that `unity-bundle` was checked against. It is no longer a dependency; `unity-bundle`'s README says what was read from it.
+  Apache-2.0): the reference that [unity-bundle](https://crates.io/crates/unity-bundle) (ours, which reads the bundles now)
+  followed for the structure of its type tree reader and deserializer (its Provenance section says exactly what was read),
+  and the oracle it was checked against. Versions 0.1.x of this tool read the bundles with rabex, through our fork with
+  three changes. It is no longer a dependency of this crate.
 - [AssetStudio](https://github.com/Perfare/AssetStudio) and [AssetRipper](https://github.com/AssetRipper/AssetRipper)
   (both MIT): their public readers were the reference for the semantics of the streamed clip format, generic bindings,
   vertex stream layout and the 2019.4 bundle header. No code was copied.
@@ -531,8 +544,7 @@ Counts come from `check` (all 257 demon bundles, 232 with a model) and `check --
 - [bcn-decode](https://crates.io/crates/bcn-decode) (ours, written from the public specifications: BC1 to BC7)
   decodes the block-compressed textures, [png](https://crates.io/crates/png) writes PNGs. The earlier build used
   texture2ddecoder, which is no longer a dependency.
-- Every dependency comes from crates.io except `unity-bundle` (ours), which is a path dependency until it is
-  published. That is also why this crate is not on crates.io yet.
+- Every dependency comes from crates.io; there is no git or path dependency.
 
 ## Disclaimer
 

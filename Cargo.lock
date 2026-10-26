@@ -246,7 +246,7 @@ dependencies = [
 
 [[package]]
 name = "nocturne-unpack"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "bcn-decode",
@@ -380,6 +380,8 @@ checksum = "a2c754d6c33795a1c324727428e5a7dedb5b06195f9890bdbcba760d3e246563"
 [[package]]
 name = "unity-bundle"
 version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "298f38a18ef6baeb2def09527e902134d5d4372d65dc894de3c71c363c56cd34"
 dependencies = [
  "serde",
 ]
