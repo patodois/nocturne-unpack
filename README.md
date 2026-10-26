@@ -321,7 +321,7 @@ A requirement on another minor line (`"0.3"`) would be a second copy, so stay on
 
 ```toml
 [dependencies]
-nocturne-unpack = { git = "https://github.com/patodois/nocturne-unpack", features = ["bridge"] }   # add rev = "<commit>" to pin it
+nocturne-unpack = { version = "0.2", features = ["bridge"] }
 rewrite-bridge = "0.2"
 ```
 
