@@ -1,5 +1,5 @@
 //! Typed views of the Unity objects this crate reads. Field names are the ones in the type trees
-//! stored in the bundles, which is how rabex matches them; fields a decoder does not use are
+//! stored in the bundles, which is how unity-bundle matches them; fields a decoder does not use are
 //! left out and skipped while reading.
 
 #![allow(non_snake_case)]

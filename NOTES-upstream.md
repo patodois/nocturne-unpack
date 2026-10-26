@@ -1,3 +1,7 @@
+> **Historical.** `nocturne-unpack` no longer depends on rabex or on this fork: it reads bundles with `unity-bundle`
+> (see the README, "Container layer"). The notes below describe the three changes to rabex that were proposed in
+> jakobhellermann/RustyAssetBundleEXtractor#1 and are kept for that pull request.
+
 # Notes for upstream
 
 `nocturne-unpack` reads UnityFS bundles with [rabex](https://github.com/jakobhellermann/RustyAssetBundleEXtractor)

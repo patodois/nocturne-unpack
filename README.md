@@ -72,8 +72,8 @@ To build it yourself instead, see [Build](#build).
   `export NOCTURNE_GAME_DIR=<folder>`; `--game` wins over the variable, which wins over the default. A leading `~/`
   is expanded. `--game` also accepts the `smt3hd_Data/StreamingAssets/PC` folder itself.
 - **Rust**, the stable toolchain from [rustup.rs](https://rustup.rs) (edition 2021; written and tested with 1.99), and
-  `git`, because Cargo fetches [rabex](#container-layer) from our fork on GitHub (the `bridge` feature downloads
-  [rewrite-bridge](https://crates.io/crates/rewrite-bridge) from crates.io).
+  the [unity-bundle](#container-layer) crate checked out next to this repository (`../unity-bundle`) until it is
+  published (the `bridge` feature downloads [rewrite-bridge](https://crates.io/crates/rewrite-bridge) from crates.io).
   A clean release build takes about 11 seconds on an M-series Mac with 4 jobs (`cargo build --release -j 4`), and the
   `bridge` feature adds about 5 more.
 - **Disk and memory.** Nothing is extracted or copied; the game folder is about 12 GB. Each command opens one bundle at
@@ -246,21 +246,13 @@ file, so it counts the copies.
 
 ## Container layer
 
-The bundles are read with [rabex](https://github.com/jakobhellermann/RustyAssetBundleEXtractor) 0.2.1, which reads
-UnityFS bundles and serialized files and deserializes objects through type trees. It could not open these bundles as
-released, because Unity 2019.4 writes version 6 bundles and rabex read their header one byte late. `Cargo.toml` depends
-on the branch `nocturne` of [our fork](https://github.com/patodois/RustyAssetBundleEXtractor), which is rabex 0.2.1 with
-three small changes (proposed upstream as
-[jakobhellermann/RustyAssetBundleEXtractor#1](https://github.com/jakobhellermann/RustyAssetBundleEXtractor/pull/1);
-the story is in `NOTES-upstream.md`):
-
-- no extra byte after the header flags for UnityFS, and the 2019.4 block-info alignment done the way AssetStudio does it
-- `read_at_entry_range`, which decompresses only the blocks that cover a range of a bundle entry, for `.resS` streams
-- the buffer of a file read from a bundle is reserved up front (at most 256 MiB, whatever the file's directory says),
-  which stopped the process from growing by about 12 MB every time the same bundle was opened and dropped again
-
-It is a git dependency, not a `[patch]` section: Cargo applies `[patch]` only in the root of a build, so a crate
-that depends on this one would not have got the fixes. Nothing has to be added to your `Cargo.toml` for it.
+The bundles are read with `unity-bundle`, a crate of ours (MIT OR Apache-2.0) written for these files: UnityFS bundles
+(container format version 6), serialized files of format versions 17 and 21 (the game ships both: 29 bundles were written
+by Unity 2018.4.13f1, the rest by 2019.4), LZ4 blocks, ranged reads of the `.resS` streams, and a serde deserializer that
+reads objects through the type trees stored in the bundles. It replaces [rabex](https://github.com/jakobhellermann/RustyAssetBundleEXtractor)
+and our fork of it, and was compared with that fork as a black box on every bundle of the game: identical decompressed
+blocks, type trees, and parsed values (see its `tools/oracle/REPORT.txt`). `Cargo.toml` has it as a path dependency
+(`../unity-bundle`) until it is published, so a crate that depends on this one needs a checkout of it as well.
 
 With that, all 3,087 bundle files (2,250 in the base game, 837 in the DLC folders, which repeat base names) open, and every object decodes through the
 type tree stored in its own bundle. No field layout is hardcoded for the Unity version.
@@ -321,8 +313,7 @@ rewrite-bridge, or `Nocturne` implements a `Provider` that your code's `Provider
 "multiple different versions of crate `rewrite_bridge`". From crates.io Cargo does this for you: every `0.2`
 requirement (this crate asks for `0.2.1`, your `"0.2"` accepts it) resolves to one 0.2.x release and is built once.
 A requirement on another minor line (`"0.3"`) would be a second copy, so stay on the same `0.x` as this crate.
-`cargo tree -i rewrite-bridge` must show a single copy. No `[patch]` section is needed (rabex comes from the fork,
-see [Container layer](#container-layer)).
+`cargo tree -i rewrite-bridge` must show a single copy. No `[patch]` section is needed.
 
 ```toml
 [dependencies]
@@ -530,7 +521,8 @@ Counts come from `check` (all 257 demon bundles, 232 with a model) and `check --
 ## Credits
 
 - [rabex](https://github.com/jakobhellermann/RustyAssetBundleEXtractor) by Rudolf Kolbe and Jakob Hellermann (MIT or
-  Apache-2.0): bundle and serialized file parsing, type tree deserialization. Used through our fork with the three changes above.
+  Apache-2.0) read the bundles of earlier versions of this tool, through our fork with three changes, and was the oracle
+  that `unity-bundle` was checked against. It is no longer a dependency; `unity-bundle`'s README says what was read from it.
 - [AssetStudio](https://github.com/Perfare/AssetStudio) and [AssetRipper](https://github.com/AssetRipper/AssetRipper)
   (both MIT): their public readers were the reference for the semantics of the streamed clip format, generic bindings,
   vertex stream layout and the 2019.4 bundle header. No code was copied.
@@ -539,9 +531,8 @@ Counts come from `check` (all 257 demon bundles, 232 with a model) and `check --
 - [bcn-decode](https://crates.io/crates/bcn-decode) (ours, written from the public specifications: BC1 to BC7)
   decodes the block-compressed textures, [png](https://crates.io/crates/png) writes PNGs. The earlier build used
   texture2ddecoder, which is no longer a dependency.
-- Every dependency comes from crates.io except rabex: its fork stays a git dependency for now (see
-  [Container layer](#container-layer)), until its three changes are in a release. That is also why this crate is not
-  on crates.io yet.
+- Every dependency comes from crates.io except `unity-bundle` (ours), which is a path dependency until it is
+  published. That is also why this crate is not on crates.io yet.
 
 ## Disclaimer
 
@@ -552,4 +543,4 @@ you use this tool. Use it for reading and studying game data only; do not redist
 
 ## License
 
-Licensed under either of MIT or Apache-2.0, at your option. rabex keeps its own licenses.
+Licensed under either of MIT or Apache-2.0, at your option.

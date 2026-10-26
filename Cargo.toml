@@ -10,11 +10,9 @@ readme = "README.md"
 anyhow = "1"
 clap = { version = "4", features = ["derive", "env"] }
 memmap2 = "0.9"
-# Reads UnityFS bundles and deserializes objects through their type trees. rabex 0.2.1 plus three small
-# fixes (Unity 2019.4 headers, ranged reads, a bounded read buffer) that are not in a release yet: our fork's
-# branch `nocturne` merges them (see NOTES-upstream.md). A git dependency, so it also works for crates that
-# depend on this one, which a [patch] section would not.
-rabex = { git = "https://github.com/patodois/RustyAssetBundleEXtractor", rev = "56dd8a4d8d5048b6ee7664eadc89d98343c66002", default-features = false, features = ["compression-lz4", "compression-lzma"] }
+# Reads UnityFS bundles and deserializes objects through their type trees; written for this crate's
+# files (Unity 2018.4 and 2019.4) and not yet published, hence the path
+unity-bundle = { path = "../unity-bundle" }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
 # Block-compression texture decoder (BC1 to BC7), written from the public specifications

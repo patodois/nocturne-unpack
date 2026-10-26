@@ -8,13 +8,11 @@
 
 use std::collections::HashMap;
 use std::fs::File;
-use std::io::Cursor;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use anyhow::{bail, Context, Result};
 use memmap2::Mmap;
-use rabex::files::bundlefile::{BundleFileReader, ExtractionConfig};
 
 use crate::bundle::{class, Bundle};
 use crate::unity::{PPtr, Shader};
@@ -180,12 +178,9 @@ impl Install {
     fn cabs_of(path: &Path) -> Result<Vec<String>> {
         let file = File::open(path)?;
         let map = unsafe { Mmap::map(&file)? };
-        let reader = BundleFileReader::from_reader(
-            Cursor::new(map),
-            &ExtractionConfig::default().assume_recent_unity(),
-        )?;
+        let reader = unity_bundle::Bundle::new(map)?;
         Ok(reader
-            .files()
+            .entries()
             .iter()
             .filter(|f| !f.path.contains('.'))
             .map(|f| f.path.clone())
