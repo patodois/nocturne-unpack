@@ -18,6 +18,8 @@ This project contains no game code or game data, and nothing extracted from the 
 dumps, screenshots or fixtures. It only reads files from a copy of the game you already have installed, so you need your
 own copy. Tests that need the game skip themselves when it is not there.
 
+**Adding this to a game.** Read the [guide to adding a game](https://github.com/patodois/rewrite-bridge/blob/main/docs/INTEGRATING.md) first. Here: build with the `bridge` feature and open the provider with `nocturne_unpack::bridge::Nocturne::open(game_folder)`; you pass the folder that holds `smt3hd_Data`, nothing searches for it.
+
 ## Download
 
 Programs built for each release are on the [Releases page](https://github.com/patodois/nocturne-unpack/releases). Pick the archive for your system:
