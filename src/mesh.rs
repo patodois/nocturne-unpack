@@ -7,7 +7,7 @@
 //! numbers are fixed by Unity 2019: 0 position, 1 normal, 2 tangent, 3 colour, 4 and 5 the first
 //! two UV sets, 12 blend weights, 13 blend indices.
 
-use anyhow::{anyhow, bail, ensure, Result};
+use anyhow::{anyhow, bail, ensure, Context, Result};
 
 use crate::bundle::Bundle;
 use crate::unity::{ChannelInfo, Mesh};
@@ -277,7 +277,16 @@ pub fn decode_with(mesh: &Mesh, data: &[u8]) -> Result<MeshData> {
         f => bail!("mesh {:?}: index format {f}", mesh.m_Name),
     };
     let ib = &mesh.m_IndexBuffer;
+    let mut copied_index_bytes = 0usize;
+    let copy_limit = ib.len().saturating_mul(16);
     for (i, sm) in mesh.m_SubMeshes.iter().enumerate() {
+        copied_index_bytes = copied_index_bytes
+            .checked_add(sm.indexCount as usize * 4)
+            .context("index copy size overflow")?;
+        ensure!(
+            copied_index_bytes <= copy_limit,
+            "shared submeshes exceed the {copy_limit}-byte index copy budget"
+        );
         ensure!(
             sm.topology == 0,
             "mesh {:?}: sub-mesh {i} has topology {} (only triangles are read)",
@@ -419,6 +428,20 @@ mod tests {
             m_StreamData: Default::default(),
         };
         (mesh, data)
+    }
+
+    #[test]
+    fn repeated_submeshes_have_an_index_copy_budget() {
+        let (mut mesh, data) = synthetic_mesh();
+        mesh.m_IndexBuffer = [0u16, 1, 2]
+            .iter()
+            .cycle()
+            .take(12288)
+            .flat_map(|v| v.to_le_bytes())
+            .collect();
+        mesh.m_SubMeshes[0].indexCount = 12288;
+        mesh.m_SubMeshes.resize(128, mesh.m_SubMeshes[0].clone());
+        assert!(decode_with(&mesh, &data).is_err());
     }
 
     #[test]
