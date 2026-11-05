@@ -445,10 +445,12 @@ All numbers are from one run on a 16 GB machine, one bundle open at a time; "pea
   below the root, a clip that also animates the node that carries a skinned mesh). A sample of 44 field prefabs passes too.
 - Renders, made with three.js in headless Chromium: demons in the bind pose and in the middle of a clip, and a field.
   They are not in the repository.
-- `cargo test --release --features bridge` with `NOCTURNE_GAME_DIR` set: 51 unit tests, 11 tests against the install (three
+- `cargo test --release --features bridge` with `NOCTURNE_GAME_DIR` set: 58 library unit tests, 2 CLI unit tests, 11 tests against the install (three
   of them run the command line), 8 against the install through the bridge (6 provider, 2 conformance) and 2 doctests (this
   file's Rust code and `Nocturne::open`); without the variable only the unit tests and doctests run. `cargo clippy --all-targets -- -D warnings` is clean,
   with and without the `bridge` feature.
+
+The earlier byte-identical export comparison predates the Euler and initial-value corrections; affected animation output intentionally changes with those fixes, as documented below.
 
 ## Format notes
 
@@ -501,11 +503,16 @@ Counts come from `check` (all 257 demon bundles, 232 with a model) and `check --
 - Animation bindings that drive anything but a Transform's position, rotation, scale or Euler angles: GameObject active
   flags (3), renderer material properties (190) and one more kind of renderer property (67). Bindings whose path
   is not in the prefab's hierarchy (2,422) are skipped.
-- Euler rotation curves (3,720 channels in 25 demons) are written as quaternion keys. They are exact at the game's keys
-  and between them within 0.05 degrees (the largest error of a channel has a median of 0.049 and 99% of the channels are
-  within 0.102), found by adding 222,265 keys; in 146 channels an interval still misses that after five halvings, the worst by
-  0.33 degrees. Mecanim interpolates the angles and
-  converts them at every instant, which is not a polynomial in the quaternion, so this cannot be exact.
+- Euler rotation curves (3,720 channels in 25 demons) are written as quaternion keys. `check` reports
+  385,657 extra keys and no channel above the 0.05-degree tolerance. Subdivision checks three interior
+  points with half the tolerance as a probe margin, bounds cubic angular travel, and allows ten halvings;
+  exceeding the depth or output budget returns an error. An independent double-precision evaluator at
+  240 Hz measured a worst error of 0.0272 degrees (15.84 degrees before the winding correction).
+  All channels of a clip share an output budget derived from its encoded curve and binding bytes:
+  one key per two bytes, with a 2,048-key floor and a 1,048,576-key ceiling. The measured corpus uses
+  at most 0.234 keys per input byte, 95,545 keys in a clip and 1,315 in a channel.
+  Mecanim interpolates the angles and converts them at every instant, which is not a polynomial in
+  the quaternion, so this conversion cannot be exact.
 - Rotation keys are normalised (glTF requires unit quaternions), which moves them by the amount the stored ones differ
   from unit length. One jump inside a smooth curve is written one float step early. Keys outside a clip's start and
   stop (1,512) are cut to the range, with the value the curve has at the edge.
