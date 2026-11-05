@@ -692,6 +692,7 @@ impl Loader<'_> {
     ) -> Result<Animation> {
         ensure!(!c.m_Legacy, "legacy animation clip");
         let curves = clip::read_curves(c)?;
+        let mut budget = clip::ChannelBudget::new(c);
         let slots = clip::slots(&c.m_ClipBindingConstant.genericBindings);
         let total: usize = slots.iter().map(|s| s.curve_count).sum();
         ensure!(
@@ -740,9 +741,9 @@ impl Loader<'_> {
                         .add("Euler curve with an unknown rotation order");
                     continue;
                 };
-                clip::build_euler_channel(&comps, order)?
+                budget.build_euler_channel(&comps, order)?
             } else {
-                clip::build_channel(prop, &comps)?
+                budget.build_channel(prop, &comps)?
             };
             if start != 0.0 {
                 for t in ch.times.iter_mut() {

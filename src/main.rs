@@ -505,6 +505,7 @@ fn anim_diag(game: &std::path::Path, bundle: &str) -> Result<()> {
     for id in prefab::controller_clips(&b, &r, root)? {
         let c: AnimationClip = b.read(id)?;
         let cc = clip::read_curves(&c)?;
+        let mut budget = clip::ChannelBudget::new(&c);
         let slots = clip::slots(&c.m_ClipBindingConstant.genericBindings);
         println!(
             "clip {} start {} stop {} bindings {} curves {}",
@@ -525,9 +526,9 @@ fn anim_diag(game: &std::path::Path, bundle: &str) -> Result<()> {
                 .cloned()
                 .unwrap_or_else(|| format!("hash {}", s.binding.path));
             let ch = if prop == clip::Prop::Euler {
-                clip::build_euler_channel(&comps, clip::euler_order_of(s.binding.customType)?)?
+                budget.build_euler_channel(&comps, clip::euler_order_of(s.binding.customType)?)?
             } else {
-                clip::build_channel(prop, &comps)?
+                budget.build_channel(prop, &comps)?
             };
             if node.is_none() {
                 println!("  UNRESOLVED {:?} {:?} {}", prop, name, ch.times.len());
@@ -751,6 +752,7 @@ fn probe(
             continue;
         }
         let cc = clip::read_curves(&c)?;
+        let mut budget = clip::ChannelBudget::new(&c);
         let slots = clip::slots(&c.m_ClipBindingConstant.genericBindings);
         for s in slots.iter().filter(|s| s.binding.path == hash) {
             let Some(prop) = s.prop else { continue };
@@ -759,9 +761,9 @@ fn probe(
                 .collect();
             let ch = if prop == clip::Prop::Euler {
                 let order = clip::euler_order_of(s.binding.customType)?;
-                clip::build_euler_channel(&comps, order)?
+                budget.build_euler_channel(&comps, order)?
             } else {
-                clip::build_channel(prop, &comps)?
+                budget.build_channel(prop, &comps)?
             };
             // The curves' polynomials evaluated directly, and the channel as glTF samples it
             let direct: Vec<f32> = comps.iter().map(|c| c.value(time)).collect();

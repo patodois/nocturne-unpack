@@ -455,6 +455,10 @@ fn union_times(comps: &[&Curve]) -> Vec<f32> {
 ///   followed by a jump inside such a channel is written as a key one float step before the jump
 ///   (`steps_encoded` counts them), as a cubic spline has no other way to jump.
 pub fn build_channel(prop: Prop, comps: &[&Curve]) -> Result<Channel> {
+    build_channel_limited(prop, comps, usize::MAX)
+}
+
+fn build_channel_limited(prop: Prop, comps: &[&Curve], key_limit: usize) -> Result<Channel> {
     let n = comps.len();
     if comps.iter().any(|c| c.keys.is_empty()) {
         bail!("a curve without keys");
@@ -479,6 +483,10 @@ pub fn build_channel(prop: Prop, comps: &[&Curve]) -> Result<Channel> {
         times.sort_by(f32::total_cmp);
         times.dedup();
     }
+    ensure!(
+        times.len() <= key_limit,
+        "clip channels exceed the output key budget"
+    );
     let keyframes = times.len();
     let mut values = vec![0.0; keyframes * n];
     let mut in_t = vec![0.0; keyframes * n];
@@ -582,6 +590,14 @@ fn euler_at(comps: &[&Curve], order: [usize; 3], t: f32) -> [f32; 4] {
 /// game's curve by more than [`EULER_TOLERANCE_DEG`] it holds extra keys, found by halving the
 /// interval (`approximated` counts them). A curve with a single key is exact.
 pub fn build_euler_channel(comps: &[&Curve], order: [usize; 3]) -> Result<Channel> {
+    build_euler_channel_limited(comps, order, MAX_EULER_KEYS)
+}
+
+fn build_euler_channel_limited(
+    comps: &[&Curve],
+    order: [usize; 3],
+    key_limit: usize,
+) -> Result<Channel> {
     ensure!(
         comps.len() == 3,
         "Euler binding with {} curves",
@@ -607,7 +623,7 @@ pub fn build_euler_channel(comps: &[&Curve], order: [usize; 3]) -> Result<Channe
 
     // Keys with the shortest path between neighbours
     ensure!(
-        times.len() <= MAX_EULER_KEYS,
+        times.len() <= key_limit,
         "Euler channel exceeds the key budget"
     );
     let mut keys: Vec<(f32, [f32; 4])> = Vec::with_capacity(times.len());
@@ -621,7 +637,7 @@ pub fn build_euler_channel(comps: &[&Curve], order: [usize; 3]) -> Result<Channe
         keys.push((t, q));
     }
     ensure!(
-        keys.len() <= MAX_EULER_KEYS,
+        keys.len() <= key_limit,
         "Euler channel exceeds the key budget"
     );
     let mut sub = Subdivide {
@@ -630,10 +646,11 @@ pub fn build_euler_channel(comps: &[&Curve], order: [usize; 3]) -> Result<Channe
         out: Vec::with_capacity(keys.len()),
         added: 0,
         max_err: 0.0,
+        key_limit,
     };
     for i in 0..keys.len() {
         ensure!(
-            sub.out.len() < MAX_EULER_KEYS,
+            sub.out.len() < key_limit,
             "Euler channel exceeds the key budget"
         );
         sub.out.push(keys[i]);
@@ -676,6 +693,7 @@ struct Subdivide<'a> {
     out: Vec<(f32, [f32; 4])>,
     added: usize,
     max_err: f32,
+    key_limit: usize,
 }
 
 impl Subdivide<'_> {
@@ -724,7 +742,7 @@ impl Subdivide<'_> {
         let mid = (tm, truth);
         self.between(a, mid, depth + 1)?;
         ensure!(
-            self.out.len() < MAX_EULER_KEYS,
+            self.out.len() < self.key_limit,
             "Euler channel exceeds the key budget"
         );
         self.out.push(mid);
@@ -1383,5 +1401,82 @@ mod euler_curvature_regression {
             ch.times.len(),
             ch.max_error_deg
         );
+    }
+}
+
+/// Shared output-key budget for all bindings of one serialized clip.
+/// Allows one key per two encoded bytes, with a 2,048-key floor and 1,048,576-key ceiling.
+/// The measured corpus needs at most 0.234 keys per input byte and 1,315 keys in one channel.
+pub struct ChannelBudget {
+    remaining: usize,
+}
+impl ChannelBudget {
+    pub fn new(clip: &AnimationClip) -> Self {
+        let c = &clip.m_MuscleClip.m_Clip.data;
+        let bytes = c
+            .m_StreamedClip
+            .data
+            .len()
+            .saturating_add(c.m_DenseClip.m_SampleArray.len())
+            .saturating_add(c.m_ConstantClip.data.len())
+            .saturating_mul(4)
+            .saturating_add(
+                clip.m_ClipBindingConstant
+                    .genericBindings
+                    .len()
+                    .saturating_mul(16),
+            );
+        Self::from_input_bytes(bytes)
+    }
+    fn from_input_bytes(bytes: usize) -> Self {
+        Self {
+            remaining: (bytes / 2).clamp(2048, MAX_EULER_KEYS),
+        }
+    }
+    pub fn build_channel(&mut self, prop: Prop, comps: &[&Curve]) -> Result<Channel> {
+        let ch = build_channel_limited(prop, comps, self.remaining)?;
+        self.remaining -= ch.times.len();
+        Ok(ch)
+    }
+    pub fn build_euler_channel(&mut self, comps: &[&Curve], order: [usize; 3]) -> Result<Channel> {
+        let ch = build_euler_channel_limited(comps, order, self.remaining.min(MAX_EULER_KEYS))?;
+        self.remaining -= ch.times.len();
+        Ok(ch)
+    }
+}
+#[cfg(test)]
+mod clip_output_budget {
+    use super::*;
+    #[test]
+    fn channels_share_the_clips_output_budget() {
+        let x = Curve {
+            initial: None,
+            keys: vec![
+                Key {
+                    time: 0.0,
+                    a: 720.0,
+                    b: -1080.0,
+                    c: 360.0,
+                    d: 0.0,
+                },
+                Key::constant(1.0, 0.0),
+            ],
+        };
+        let zero = Curve {
+            initial: None,
+            keys: vec![Key::constant(0.0, 0.0), Key::constant(1.0, 0.0)],
+        };
+        let mut budget = ChannelBudget::from_input_bytes(4096);
+        let mut stopped = false;
+        for _ in 0..40 {
+            if budget
+                .build_euler_channel(&[&x, &zero, &zero], [0, 1, 2])
+                .is_err()
+            {
+                stopped = true;
+                break;
+            }
+        }
+        assert!(stopped, "all channels bypassed the aggregate budget");
     }
 }
