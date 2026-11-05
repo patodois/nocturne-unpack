@@ -90,7 +90,8 @@ impl Curve {
     pub fn value(&self, t: f32) -> f32 {
         match self.segment(t) {
             Some(i) => self.keys[i].at(t - self.keys[i].time),
-            None => self.keys.first().map_or(0.0, |k| k.d),
+            None => self.initial
+                .unwrap_or_else(|| self.keys.first().map_or(0.0, |k| k.d)),
         }
     }
 
@@ -117,6 +118,10 @@ impl Curve {
             Some(i) if i + 1 < self.keys.len() => {
                 self.keys[i].is_flat() && self.keys[i + 1].d != self.keys[i].d
             }
+            None => self
+                .initial
+                .zip(self.keys.first())
+                .is_some_and(|(v, k)| v != k.d),
             _ => false,
         }
     }
@@ -126,6 +131,15 @@ impl Curve {
     /// Returns how many keys were affected.
     fn trim(&mut self, start: f32, stop: f32) -> usize {
         let mut touched = 0;
+        if let Some(initial) = self.initial {
+            if self
+                .keys
+                .first()
+                .is_none_or(|k| k.time > start && k.d != initial)
+            {
+                self.keys.insert(0, Key::constant(start, initial));
+            }
+        }
         let first_in = self.keys.partition_point(|k| k.time < start);
         if first_in > 0 && self.keys.get(first_in).is_none_or(|k| k.time > start) {
             // The key before `start` is in effect at `start`
@@ -419,6 +433,13 @@ fn union_times(comps: &[&Curve]) -> Vec<f32> {
         .iter()
         .flat_map(|c| c.keys.iter().map(|k| k.time))
         .collect();
+    if comps.iter().any(|c| {
+        c.initial
+            .zip(c.keys.first())
+            .is_some_and(|(v, k)| k.time > 0.0 && v != k.d)
+    }) {
+        times.push(0.0);
+    }
     times.sort_by(f32::total_cmp);
     times.dedup();
     times
@@ -1209,5 +1230,36 @@ mod tests {
             v[1] + w * t[1] + (z * t[0] - x * t[2]),
             v[2] + w * t[2] + (x * t[1] - y * t[0]),
         ]
+    }
+}
+#[cfg(test)]
+mod streamed_initial_regression {
+    use super::*;
+    #[test]
+    fn initial_value_survives_sampling_and_channel_building() {
+        let c = Curve {
+            initial: Some(9.0),
+            keys: vec![Key::constant(0.5, 3.0), Key::constant(1.0, 3.0)],
+        };
+        assert_eq!(c.value(0.25), 9.0);
+        let ch = build_channel(Prop::Position, &[&c, &c, &c]).unwrap();
+        assert_eq!(sample_channel(&ch, 0.25), vec![9.0; 3]);
+        assert_eq!(sample_channel(&ch, 0.5), vec![3.0; 3]);
+        let moving = Curve {
+            initial: None,
+            keys: vec![
+                Key {
+                    time: 0.0,
+                    a: 0.0,
+                    b: 0.0,
+                    c: 1.0,
+                    d: 0.0,
+                },
+                Key::constant(1.0, 1.0),
+            ],
+        };
+        let ch = build_channel(Prop::Position, &[&c, &moving, &moving]).unwrap();
+        let at = sample_channel(&ch, 0.25);
+        assert!((at[0] - 9.0).abs() < 1e-5 && (at[1] - 0.25).abs() < 1e-5);
     }
 }
