@@ -1480,3 +1480,96 @@ mod clip_output_budget {
         assert!(stopped, "all channels bypassed the aggregate budget");
     }
 }
+
+#[cfg(test)]
+mod subdivision_guard_coverage {
+    use super::*;
+    fn bend() -> Curve {
+        Curve {
+            initial: None,
+            keys: vec![
+                Key {
+                    time: 0.0,
+                    a: 0.0,
+                    b: 8.0,
+                    c: 0.0,
+                    d: 0.0,
+                },
+                Key::constant(1.0, 8.0),
+            ],
+        }
+    }
+    fn zero() -> Curve {
+        Curve {
+            initial: None,
+            keys: vec![Key::constant(0.0, 0.0), Key::constant(1.0, 0.0)],
+        }
+    }
+    #[test]
+    fn key_limit_refuses_an_interval_that_needs_more_output() {
+        let (x, z) = (bend(), zero());
+        assert!(build_euler_channel_limited(&[&x, &z, &z], [0, 1, 2], 2).is_err());
+    }
+    #[test]
+    fn depth_exhaustion_returns_an_error_instead_of_accepting_an_inaccurate_interval() {
+        let (x, z) = (bend(), zero());
+        let comps = [&x, &z, &z];
+        let mut sub = Subdivide {
+            comps: &comps,
+            order: [0, 1, 2],
+            out: vec![],
+            added: 0,
+            max_err: 0.0,
+            key_limit: 2048,
+        };
+        assert!(sub
+            .between(
+                (0.0, euler_at(&comps, [0, 1, 2], 0.0)),
+                (1.0, euler_at(&comps, [0, 1, 2], 1.0)),
+                EULER_MAX_DEPTH
+            )
+            .is_err());
+    }
+    #[test]
+    fn trimming_an_initial_hold_does_not_turn_a_jump_into_a_constant() {
+        let mut c = Curve {
+            initial: Some(9.0),
+            keys: vec![Key::constant(0.5, 3.0)],
+        };
+        c.trim(0.0, 1.0);
+        assert!(!c.is_constant());
+        assert_eq!(c.keys[0].time, 0.0);
+        assert_eq!(c.keys[0].d, 9.0);
+    }
+    #[test]
+    fn probe_margin_bounds_the_unsampled_cubic_extrema() {
+        let x = Curve {
+            initial: None,
+            keys: vec![
+                Key {
+                    time: 0.0,
+                    a: 1.06,
+                    b: -1.59,
+                    c: 0.53,
+                    d: 0.0,
+                },
+                Key::constant(1.0, 0.0),
+            ],
+        };
+        let z = zero();
+        let ch = build_euler_channel(&[&x, &z, &z], [0, 1, 2]).unwrap();
+        for i in 0..=1000 {
+            let t = i as f32 / 1000.0;
+            let sample = sample_channel(&ch, t);
+            let deg =
+                1.06f64 * (t as f64).powi(3) - 1.59f64 * (t as f64).powi(2) + 0.53f64 * (t as f64);
+            let half = deg.to_radians() / 2.0;
+            let truth = [half.sin() as f32, 0.0, 0.0, half.cos() as f32];
+            let actual = [sample[0], sample[1], sample[2], sample[3]];
+            assert!(
+                quat_angle_deg(&truth, &actual) <= EULER_TOLERANCE_DEG,
+                "error at {t}"
+            );
+        }
+    }
+}
