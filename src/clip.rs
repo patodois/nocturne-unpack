@@ -90,7 +90,8 @@ impl Curve {
     pub fn value(&self, t: f32) -> f32 {
         match self.segment(t) {
             Some(i) => self.keys[i].at(t - self.keys[i].time),
-            None => self.initial
+            None => self
+                .initial
                 .unwrap_or_else(|| self.keys.first().map_or(0.0, |k| k.d)),
         }
     }
@@ -414,7 +415,7 @@ pub struct Channel {
     /// hemisphere: `q` and `-q` are one rotation, but interpolating towards `-q` goes the long way
     pub hemisphere_flips: usize,
     /// Largest angle (degrees) between the written channel and the game's Euler curve at the
-    /// midpoints checked
+    /// interior probe times checked
     pub max_error_deg: f32,
 }
 
@@ -539,7 +540,8 @@ pub fn build_channel(prop: Prop, comps: &[&Curve]) -> Result<Channel> {
 pub const EULER_TOLERANCE_DEG: f32 = 0.05;
 
 /// Halvings of an interval allowed when adding keys to an Euler channel.
-pub const EULER_MAX_DEPTH: u32 = 5;
+pub const EULER_MAX_DEPTH: u32 = 10;
+const MAX_EULER_KEYS: usize = 1 << 20;
 
 fn quat_dot(a: &[f32; 4], b: &[f32; 4]) -> f32 {
     a.iter().zip(b).map(|(x, y)| x * y).sum()
@@ -604,6 +606,10 @@ pub fn build_euler_channel(comps: &[&Curve], order: [usize; 3]) -> Result<Channe
     times.dedup();
 
     // Keys with the shortest path between neighbours
+    ensure!(
+        times.len() <= MAX_EULER_KEYS,
+        "Euler channel exceeds the key budget"
+    );
     let mut keys: Vec<(f32, [f32; 4])> = Vec::with_capacity(times.len());
     for &t in &times {
         let mut q = euler_at(comps, order, t);
@@ -614,6 +620,10 @@ pub fn build_euler_channel(comps: &[&Curve], order: [usize; 3]) -> Result<Channe
         }
         keys.push((t, q));
     }
+    ensure!(
+        keys.len() <= MAX_EULER_KEYS,
+        "Euler channel exceeds the key budget"
+    );
     let mut sub = Subdivide {
         comps,
         order,
@@ -622,9 +632,13 @@ pub fn build_euler_channel(comps: &[&Curve], order: [usize; 3]) -> Result<Channe
         max_err: 0.0,
     };
     for i in 0..keys.len() {
+        ensure!(
+            sub.out.len() < MAX_EULER_KEYS,
+            "Euler channel exceeds the key budget"
+        );
         sub.out.push(keys[i]);
         if i + 1 < keys.len() {
-            sub.between(keys[i], keys[i + 1], 0);
+            sub.between(keys[i], keys[i + 1], 0)?;
         }
     }
     let (approximated, max_err) = (sub.added, sub.max_err);
@@ -666,29 +680,57 @@ struct Subdivide<'a> {
 
 impl Subdivide<'_> {
     /// Pushes the keys needed strictly between `a` and `b` (not `b` itself).
-    fn between(&mut self, a: (f32, [f32; 4]), b: (f32, [f32; 4]), depth: u32) {
-        if depth >= EULER_MAX_DEPTH || b.0 - a.0 <= 4.0 * f32::EPSILON * b.0.abs().max(1.0) {
-            return;
-        }
+    fn between(&mut self, a: (f32, [f32; 4]), b: (f32, [f32; 4]), depth: u32) -> Result<()> {
         let tm = 0.5 * (a.0 + b.0);
+        if tm <= a.0 || tm >= b.0 {
+            return Ok(());
+        }
         let mut truth = euler_at(self.comps, self.order, tm);
         if quat_dot(&a.1, &truth) < 0.0 {
             truth = truth.map(|x| -x);
         }
         let lerp = quat_slerp(&a.1, &b.1, 0.5);
-        let err = quat_angle_deg(&truth, &lerp);
-        if err <= EULER_TOLERANCE_DEG {
-            self.max_err = self.max_err.max(err);
-            return;
+        let mut err = quat_angle_deg(&truth, &lerp);
+        for u in [0.25, 0.75] {
+            let q = euler_at(self.comps, self.order, a.0 + (b.0 - a.0) * u);
+            err = err.max(quat_angle_deg(&q, &quat_slerp(&a.1, &b.1, u)));
         }
-        if depth + 1 >= EULER_MAX_DEPTH {
+        // Bound cubic angular travel with the quadratic derivative's Bernstein control values.
+        // Midpoint agreement alone can alias any even number of full turns.
+        let dt = f64::from(b.0 - a.0);
+        let travel: f64 = self
+            .comps
+            .iter()
+            .map(|c| {
+                let Some(i) = c.segment(a.0) else { return 0.0 };
+                let k = c.keys[i];
+                let t = f64::from(a.0 - k.time);
+                let (ka, kb, kc) = (f64::from(k.a), f64::from(k.b), f64::from(k.c));
+                let d0 = (3.0 * ka * t + 2.0 * kb) * t + kc;
+                let d1 = d0 + (6.0 * ka * t + 2.0 * kb) * dt / 2.0;
+                let d2 = (3.0 * ka * (t + dt) + 2.0 * kb) * (t + dt) + kc;
+                d0.abs().max(d1.abs()).max(d2.abs()) * dt
+            })
+            .sum();
+        // Leave room for the error between the three probes.
+        if err <= EULER_TOLERANCE_DEG * 0.5 && travel <= 180.0 {
             self.max_err = self.max_err.max(err);
+            return Ok(());
         }
+        ensure!(
+            depth < EULER_MAX_DEPTH,
+            "Euler subdivision budget cannot preserve the angular motion within tolerance"
+        );
         let mid = (tm, truth);
-        self.between(a, mid, depth + 1);
+        self.between(a, mid, depth + 1)?;
+        ensure!(
+            self.out.len() < MAX_EULER_KEYS,
+            "Euler channel exceeds the key budget"
+        );
         self.out.push(mid);
         self.added += 1;
-        self.between(mid, b, depth + 1);
+        self.between(mid, b, depth + 1)?;
+        Ok(())
     }
 }
 
@@ -1261,5 +1303,85 @@ mod streamed_initial_regression {
         let ch = build_channel(Prop::Position, &[&c, &moving, &moving]).unwrap();
         let at = sample_channel(&ch, 0.25);
         assert!((at[0] - 9.0).abs() < 1e-5 && (at[1] - 0.25).abs() < 1e-5);
+    }
+}
+
+#[cfg(test)]
+mod euler_turn_regression {
+    use super::*;
+    #[test]
+    fn euler_complete_turns_survive_between_keys() {
+        for turns in [2.0, 4.0, 8.0] {
+            let x = Curve {
+                initial: None,
+                keys: vec![
+                    Key {
+                        time: 0.0,
+                        a: 0.0,
+                        b: 0.0,
+                        c: 360.0 * turns,
+                        d: 0.0,
+                    },
+                    Key::constant(1.0, 360.0 * turns),
+                ],
+            };
+            let z = Curve {
+                initial: None,
+                keys: vec![Key::constant(0.0, 0.0), Key::constant(1.0, 0.0)],
+            };
+            let ch = build_euler_channel(&[&x, &z, &z], [0, 1, 2]).unwrap();
+            let mut max = 0.0f32;
+            for k in 0..=1000 {
+                let t = k as f32 / 1000.0;
+                let q = sample_channel(&ch, t);
+                let a = (360.0 * turns * t).to_radians() / 2.0;
+                let dot = (q[0] * a.sin() + q[3] * a.cos()).abs().min(1.0);
+                let err = 2.0 * dot.acos().to_degrees();
+                max = max.max(err);
+            }
+            assert!(
+                max <= 0.1,
+                "keys={} reported={} actual={max}",
+                ch.times.len(),
+                ch.max_error_deg
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod euler_curvature_regression {
+    use super::*;
+    #[test]
+    fn euler_midpoint_agreement_does_not_hide_cubic_motion() {
+        let x = Curve {
+            initial: None,
+            keys: vec![
+                Key {
+                    time: 0.0,
+                    a: 80.0,
+                    b: -120.0,
+                    c: 40.0,
+                    d: 0.0,
+                },
+                Key::constant(1.0, 0.0),
+            ],
+        };
+        let zero = Curve {
+            initial: None,
+            keys: vec![Key::constant(0.0, 0.0), Key::constant(1.0, 0.0)],
+        };
+        let ch = build_euler_channel(&[&x, &zero, &zero], [0, 1, 2]).unwrap();
+        let q = sample_channel(&ch, 0.25);
+        let a = 3.75f64.to_radians() / 2.0;
+        let dot = (f64::from(q[0]) * a.sin() + f64::from(q[3]) * a.cos()).abs();
+        let norm = q.iter().map(|x| f64::from(*x).powi(2)).sum::<f64>().sqrt();
+        let error = 2.0 * (dot / norm).min(1.0).acos().to_degrees();
+        assert!(
+            error <= 0.05,
+            "keys={} reported={} actual={error}",
+            ch.times.len(),
+            ch.max_error_deg
+        );
     }
 }
