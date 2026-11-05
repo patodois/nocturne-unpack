@@ -39,7 +39,7 @@ the checksum of every archive (`shasum -a 256 -c SHA256SUMS` on macOS, `sha256su
 that the list itself came from here. With the downloads in one folder (needs OpenSSL 3):
 
 ```sh
-sh tools/verify-release.sh nocturne-unpack v0.2.0 path/to/folder
+sh tools/verify-release.sh nocturne-unpack v0.3.0 path/to/folder
 ```
 
 The signed text is `osp release patodois/nocturne-unpack <tag>`, a newline, then `SHA256SUMS`, so a signature from another release
@@ -334,7 +334,7 @@ A requirement on another minor line (`"0.2"`) would be a second copy, so stay on
 
 ```toml
 [dependencies]
-nocturne-unpack = { version = "0.2", features = ["bridge"] }
+nocturne-unpack = { version = "0.3", features = ["bridge"] }
 rewrite-bridge = "0.3"
 ```
 
