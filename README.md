@@ -313,7 +313,7 @@ with the most renderers is the default) and everything it uses:
 ## rewrite-bridge
 
 With the `bridge` feature, `src/bridge.rs` implements [rewrite-bridge](https://github.com/patodois/rewrite-bridge)'s
-`Provider` (rewrite-bridge `0.2`, from [crates.io](https://crates.io/crates/rewrite-bridge)), like wf-unpack's.
+`Provider` (rewrite-bridge `0.3`, from [crates.io](https://crates.io/crates/rewrite-bridge)), like wf-unpack's.
 
 - `list` returns every demon (id is the bundle name, `dvl0x01`, kind Character) and every field prefab that has
   something to draw (`f012/f012_002`, kind Level); prefabs of only transforms are left out.
@@ -327,15 +327,15 @@ With the `bridge` feature, `src/bridge.rs` implements [rewrite-bridge](https://g
 
 To use the provider from another crate, depend on both. Every crate in one build has to end up with the same copy of
 rewrite-bridge, or `Nocturne` implements a `Provider` that your code's `Provider` is not, and the compiler reports
-"multiple different versions of crate `rewrite_bridge`". From crates.io Cargo does this for you: every `0.2`
-requirement (this crate asks for `0.2.1`, your `"0.2"` accepts it) resolves to one 0.2.x release and is built once.
-A requirement on another minor line (`"0.3"`) would be a second copy, so stay on the same `0.x` as this crate.
+"multiple different versions of crate `rewrite_bridge`". From crates.io Cargo does this for you: every `0.3`
+requirement (this crate asks for `0.3.1`, your `"0.3"` accepts it) resolves to one 0.3.x release and is built once.
+A requirement on another minor line (`"0.2"`) would be a second copy, so stay on the same `0.x` as this crate.
 `cargo tree -i rewrite-bridge` must show a single copy. No `[patch]` section is needed.
 
 ```toml
 [dependencies]
 nocturne-unpack = { version = "0.2", features = ["bridge"] }
-rewrite-bridge = "0.2"
+rewrite-bridge = "0.3"
 ```
 
 ```rust,no_run
