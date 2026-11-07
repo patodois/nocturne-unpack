@@ -509,8 +509,8 @@ Counts come from `check` (all 257 demon bundles, 232 with a model) and `check --
   exceeding the depth or output budget returns an error. An independent double-precision evaluator at
   240 Hz measured a worst error of 0.0272 degrees (15.84 degrees before the winding correction).
   All channels of a clip share an output budget derived from its encoded curve and binding bytes:
-  one key per two bytes, with a 2,048-key floor and a 1,048,576-key ceiling. Measured provider exports peak at
-  72 keys from 636 encoded bytes (0.113208 keys per input byte).
+  one key per two bytes, with a 2,048-key floor and a 1,048,576-key ceiling. The measured provider exports'
+  highest output-key ratio occurs in a clip with 72 keys and 636 encoded bytes (0.113208 keys per input byte).
   Across all bindings, including unused clips, the largest counts are 95,545 keys in a clip and 1,315 in a channel.
   Mecanim interpolates the angles and converts them at every instant, which is not a polynomial in
   the quaternion, so this conversion cannot be exact.
@@ -575,7 +575,8 @@ Counts come from `check` (all 257 demon bundles, 232 with a model) and `check --
   222,265. These corrections intentionally change affected animation output.
 - `clip::ChannelBudget` is new. It is created from an `AnimationClip` and builds that clip's channels
   (`build_channel`, `build_euler_channel`) while sharing one output-key budget, so a clip can no longer produce more keys
-  than its encoded size allows. The free functions of the same names are still there and bound one channel at a time.
+  than its encoded size allows. The free `build_channel` has no output-key cap; the
+  free `build_euler_channel` keeps its per-channel ceiling.
 - `clip::EULER_MAX_DEPTH` is 10 instead of 5: a rotation curve may be halved ten times while the conversion to
   quaternions checks the tolerance, and a curve that needs more is an error.
 - The first value streamed before a clip's first key is kept, the angular travel inside an Euler interval is bounded,
