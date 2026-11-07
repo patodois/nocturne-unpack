@@ -1573,3 +1573,97 @@ mod subdivision_guard_coverage {
         }
     }
 }
+
+#[cfg(test)]
+mod channel_budget_contract {
+    use super::*;
+    fn flat(n: usize) -> Curve {
+        Curve {
+            initial: None,
+            keys: (0..n).map(|i| Key::constant(i as f32, 1.0)).collect(),
+        }
+    }
+    #[test]
+    fn euler_input_key_limit_precedes_the_quaternion_reservation() {
+        let c = flat(3);
+        let comps = [&c, &c, &c];
+        let (result, count) =
+            crate::alloc_probe::requests(3 * std::mem::size_of::<(f32, [f32; 4])>(), || {
+                build_euler_channel_limited(&comps, [0, 1, 2], 2)
+            });
+        assert!(result.is_err());
+        assert_eq!(
+            count, 0,
+            "reserved quaternion keys before checking the input count"
+        );
+    }
+    #[test]
+    fn plain_channel_key_limit_is_enforced_before_output() {
+        let c = flat(3);
+        assert!(build_channel_limited(Prop::Position, &[&c, &c, &c], 2).is_err());
+    }
+    #[test]
+    fn plain_and_euler_channels_consume_the_same_remaining_budget() {
+        let large = flat(2047);
+        let small = flat(2);
+        for euler_first in [false, true] {
+            let mut budget = ChannelBudget::from_input_bytes(4096);
+            let first = if euler_first {
+                budget.build_euler_channel(&[&large, &large, &large], [0, 1, 2])
+            } else {
+                budget.build_channel(Prop::Position, &[&large, &large, &large])
+            }
+            .unwrap();
+            assert_eq!(first.times.len(), 2047);
+            assert!(budget
+                .build_channel(Prop::Position, &[&small, &small, &small])
+                .is_err());
+            assert!(budget
+                .build_euler_channel(&[&small, &small, &small], [0, 1, 2])
+                .is_err());
+        }
+    }
+    #[test]
+    fn small_encoded_inputs_keep_the_documented_key_floor() {
+        for bytes in [0, 1, 4095, 4096] {
+            assert_eq!(ChannelBudget::from_input_bytes(bytes).remaining, 2048);
+        }
+        assert_eq!(ChannelBudget::from_input_bytes(4098).remaining, 2049);
+    }
+    #[test]
+    fn large_encoded_inputs_stop_at_the_documented_key_ceiling() {
+        assert_eq!(
+            ChannelBudget::from_input_bytes((1 << 21) - 2).remaining,
+            (1 << 20) - 1
+        );
+        for bytes in [1 << 21, usize::MAX] {
+            assert_eq!(ChannelBudget::from_input_bytes(bytes).remaining, 1 << 20);
+        }
+    }
+    #[test]
+    fn encoded_curve_words_and_binding_records_all_contribute_bytes() {
+        let mut muscle = crate::unity::ClipMuscleConstant::default();
+        muscle.m_Clip.data.m_StreamedClip.data = vec![0; 1024];
+        muscle.m_Clip.data.m_DenseClip.m_SampleArray = vec![0.0; 2048];
+        muscle.m_Clip.data.m_ConstantClip.data = vec![0.0; 512];
+        let clip = AnimationClip {
+            m_Name: "fixture".into(),
+            m_Legacy: false,
+            m_Compressed: false,
+            m_RotationCurves: vec![],
+            m_CompressedRotationCurves: vec![],
+            m_EulerCurves: vec![],
+            m_PositionCurves: vec![],
+            m_ScaleCurves: vec![],
+            m_FloatCurves: vec![],
+            m_SampleRate: 30.0,
+            m_WrapMode: 0,
+            m_MuscleClip: muscle,
+            m_ClipBindingConstant: crate::unity::ClipBindingConstant {
+                genericBindings: vec![crate::unity::GenericBinding::default(); 7],
+            },
+        };
+        // 3,584 four-byte words plus seven 16-byte binding records, then one key per two bytes.
+        assert_eq!(ChannelBudget::new(&clip).remaining, 7224);
+    }
+}

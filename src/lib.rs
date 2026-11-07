@@ -1,5 +1,7 @@
 //! Readers for the Unity asset bundles of Shin Megami Tensei III Nocturne HD Remaster.
 
+#[cfg(test)]
+mod alloc_probe;
 pub mod asset;
 #[cfg(feature = "bridge")]
 pub mod bridge;
