@@ -39,7 +39,7 @@ the checksum of every archive (`shasum -a 256 -c SHA256SUMS` on macOS, `sha256su
 that the list itself came from here. With the downloads in one folder (needs OpenSSL 3):
 
 ```sh
-sh tools/verify-release.sh nocturne-unpack v0.3.0 path/to/folder
+sh tools/verify-release.sh nocturne-unpack v0.4.0 path/to/folder
 ```
 
 The signed text is `osp release patodois/nocturne-unpack <tag>`, a newline, then `SHA256SUMS`, so a signature from another release
@@ -313,7 +313,7 @@ with the most renderers is the default) and everything it uses:
 ## rewrite-bridge
 
 With the `bridge` feature, `src/bridge.rs` implements [rewrite-bridge](https://github.com/patodois/rewrite-bridge)'s
-`Provider` (rewrite-bridge `0.3`, from [crates.io](https://crates.io/crates/rewrite-bridge)), like wf-unpack's.
+`Provider` (rewrite-bridge `0.4`, from [crates.io](https://crates.io/crates/rewrite-bridge)), like wf-unpack's.
 
 - `list` returns every demon (id is the bundle name, `dvl0x01`, kind Character) and every field prefab that has
   something to draw (`f012/f012_002`, kind Level); prefabs of only transforms are left out.
@@ -327,15 +327,15 @@ With the `bridge` feature, `src/bridge.rs` implements [rewrite-bridge](https://g
 
 To use the provider from another crate, depend on both. Every crate in one build has to end up with the same copy of
 rewrite-bridge, or `Nocturne` implements a `Provider` that your code's `Provider` is not, and the compiler reports
-"multiple different versions of crate `rewrite_bridge`". From crates.io Cargo does this for you: every `0.3`
-requirement (this crate asks for `0.3.1`, your `"0.3"` accepts it) resolves to one 0.3.x release and is built once.
-A requirement on another minor line (`"0.2"`) would be a second copy, so stay on the same `0.x` as this crate.
+"multiple different versions of crate `rewrite_bridge`". From crates.io Cargo does this for you: every `0.4`
+requirement (this crate asks for `0.4`, your `"0.4"` accepts it) resolves to one 0.4.x release and is built once.
+A requirement on another minor line (`"0.3"`) would be a second copy, so stay on the same `0.x` as this crate.
 `cargo tree -i rewrite-bridge` must show a single copy. No `[patch]` section is needed.
 
 ```toml
 [dependencies]
-nocturne-unpack = { version = "0.3", features = ["bridge"] }
-rewrite-bridge = "0.3"
+nocturne-unpack = { version = "0.4", features = ["bridge"] }
+rewrite-bridge = "0.4"
 ```
 
 ```rust,no_run
@@ -565,6 +565,18 @@ Counts come from `check` (all 257 demon bundles, 232 with a model) and `check --
   decodes the block-compressed textures, [png](https://crates.io/crates/png) writes PNGs. The earlier build used
   texture2ddecoder, which is no longer a dependency.
 - Every dependency comes from crates.io; there is no git or path dependency.
+
+## Changes in 0.4.0
+
+- The `bridge` feature now uses rewrite-bridge 0.4. Nothing in the provider changed; a program that also depends on
+  rewrite-bridge has to ask for `"0.4"` so the build holds one copy.
+- `clip::ChannelBudget` is new. It is created from an `AnimationClip` and builds that clip's channels
+  (`build_channel`, `build_euler_channel`) while sharing one output-key budget, so a clip can no longer produce more keys
+  than its encoded size allows. The free functions of the same names are still there and bound one channel at a time.
+- `clip::EULER_MAX_DEPTH` is 10 instead of 5: a rotation curve may be halved ten times while the conversion to
+  quaternions checks the tolerance, and a curve that needs more is an error.
+- The first value streamed before a clip's first key is kept, the angular travel inside an Euler interval is bounded,
+  and a mesh whose submeshes repeat the same indices over and over is refused once the copies pass a size limit.
 
 ## Disclaimer
 
