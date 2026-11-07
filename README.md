@@ -509,8 +509,9 @@ Counts come from `check` (all 257 demon bundles, 232 with a model) and `check --
   exceeding the depth or output budget returns an error. An independent double-precision evaluator at
   240 Hz measured a worst error of 0.0272 degrees (15.84 degrees before the winding correction).
   All channels of a clip share an output budget derived from its encoded curve and binding bytes:
-  one key per two bytes, with a 2,048-key floor and a 1,048,576-key ceiling. The measured corpus uses
-  at most 0.234 keys per input byte, 95,545 keys in a clip and 1,315 in a channel.
+  one key per two bytes, with a 2,048-key floor and a 1,048,576-key ceiling. Measured provider exports peak at
+  72 keys from 636 encoded bytes (0.113208 keys per input byte).
+  Across all bindings, including unused clips, the largest counts are 95,545 keys in a clip and 1,315 in a channel.
   Mecanim interpolates the angles and converts them at every instant, which is not a polynomial in
   the quaternion, so this conversion cannot be exact.
 - Rotation keys are normalised (glTF requires unit quaternions), which moves them by the amount the stored ones differ
@@ -568,8 +569,10 @@ Counts come from `check` (all 257 demon bundles, 232 with a model) and `check --
 
 ## Changes in 0.4.0
 
-- The `bridge` feature now uses rewrite-bridge 0.4. Nothing in the provider changed; a program that also depends on
-  rewrite-bridge has to ask for `"0.4"` so the build holds one copy.
+- The `bridge` feature now uses rewrite-bridge 0.4; a program that also depends on rewrite-bridge has to ask for
+  `"0.4"` so the build holds one copy.
+- Animation conversion retains initial holds and adds 385,657 Euler keys where the earlier conversion added
+  222,265. These corrections intentionally change affected animation output.
 - `clip::ChannelBudget` is new. It is created from an `AnimationClip` and builds that clip's channels
   (`build_channel`, `build_euler_channel`) while sharing one output-key budget, so a clip can no longer produce more keys
   than its encoded size allows. The free functions of the same names are still there and bound one channel at a time.

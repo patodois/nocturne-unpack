@@ -1406,7 +1406,7 @@ mod euler_curvature_regression {
 
 /// Shared output-key budget for all bindings of one serialized clip.
 /// Allows one key per two encoded bytes, with a 2,048-key floor and 1,048,576-key ceiling.
-/// The measured corpus needs at most 0.234 keys per input byte and 1,315 keys in one channel.
+/// The raw binding scan, including unused clips, needs at most 0.234 keys per input byte and 1,315 keys in one channel.
 pub struct ChannelBudget {
     remaining: usize,
 }
