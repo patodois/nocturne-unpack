@@ -1599,8 +1599,16 @@ mod channel_budget_contract {
     }
     #[test]
     fn plain_channel_key_limit_is_enforced_before_output() {
-        let c = flat(3);
-        assert!(build_channel_limited(Prop::Position, &[&c, &c, &c], 2).is_err());
+        let c = flat(5);
+        let (result, count) =
+            crate::alloc_probe::requests(5 * 3 * std::mem::size_of::<f32>(), || {
+                build_channel_limited(Prop::Position, &[&c, &c, &c], 4)
+            });
+        assert!(result.is_err());
+        assert_eq!(
+            count, 0,
+            "reserved values or tangents before checking the key count"
+        );
     }
     #[test]
     fn plain_and_euler_channels_consume_the_same_remaining_budget() {
