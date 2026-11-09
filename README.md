@@ -3,8 +3,7 @@
 [![rewrite-bridge on crates.io](https://img.shields.io/crates/v/rewrite-bridge.svg?label=rewrite-bridge)](https://crates.io/crates/rewrite-bridge)
 [![rewrite-bridge docs](https://img.shields.io/docsrs/rewrite-bridge?label=docs.rs)](https://docs.rs/rewrite-bridge)
 
-A small Rust crate and command line tool that reads the game data of Shin Megami Tensei III Nocturne HD Remaster
-(the Steam build for Windows) from your own install:
+nocturne-unpack is a Rust library and command-line tool for developers to read and export Shin Megami Tensei III Nocturne HD Remaster assets from their own installation of the Steam Windows build.
 
 - the Unity asset bundles in `smt3hd_Data/StreamingAssets/PC` and in the `dlc/<n>` folders (UnityFS, Unity 2019.4,
   every bundle carries its own type trees), with the `.resS` streams they point to
