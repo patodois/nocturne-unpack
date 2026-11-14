@@ -126,7 +126,10 @@ impl Nocturne {
             .clone()
     }
 
-    fn load_asset(&self, id: &str) -> Result<Asset> {
+    /// Reads the asset an id names. Clips are converted only with `animations`: of the provider's
+    /// calls only `load_animated` returns them, and converting them (the Euler curves above all)
+    /// is the expensive part of loading a demon.
+    fn load_asset(&self, id: &str, animations: bool) -> Result<Asset> {
         let (bundle_name, which) = match id.split_once('/') {
             Some((b, stem)) => (b, Some(format!("/{stem}.prefab"))),
             None => (id, None),
@@ -142,24 +145,54 @@ impl Nocturne {
             which,
             &Options {
                 textures: self.textures,
-                animations: true,
+                animations,
             },
         )
     }
 }
 
-fn to_image(img: &asset::Image) -> Image {
-    Image {
-        width: img.width,
-        height: img.height,
-        rgba: img.rgba.clone(),
+/// The pixels of an asset's images, handed out to the bridge materials that use them. A bridge
+/// [`Image`] owns its pixels, so every material that shows an image needs a buffer of its own;
+/// the last one takes the asset's buffer instead of one more copy.
+struct Pixels {
+    images: Vec<asset::Image>,
+    /// How many of the materials still to be built use each image
+    left: Vec<usize>,
+}
+
+impl Pixels {
+    /// `users` are the materials that will be built, one entry per material built.
+    fn new<'a>(
+        images: Vec<asset::Image>,
+        users: impl IntoIterator<Item = &'a asset::Material>,
+    ) -> Self {
+        let mut left = vec![0; images.len()];
+        for t in users.into_iter().filter_map(|m| m.base_color.as_ref()) {
+            left[t.image] += 1;
+        }
+        Pixels { images, left }
+    }
+
+    fn image(&mut self, index: usize) -> Image {
+        let img = &mut self.images[index];
+        debug_assert!(self.left[index] > 0, "image {index} was not counted");
+        self.left[index] = self.left[index].saturating_sub(1);
+        Image {
+            width: img.width,
+            height: img.height,
+            rgba: if self.left[index] == 0 {
+                std::mem::take(&mut img.rgba)
+            } else {
+                img.rgba.clone()
+            },
+        }
     }
 }
 
-fn material(a: &Asset, m: &asset::Material) -> Material {
+fn material(pixels: &mut Pixels, m: &asset::Material) -> Material {
     Material {
         name: m.name.clone(),
-        base_color: m.base_color.as_ref().map(|t| to_image(&a.images[t.image])),
+        base_color: m.base_color.as_ref().map(|t| pixels.image(t.image)),
         base_color_factor: m.base_color_factor,
         metallic: m.metallic,
         roughness: m.roughness,
@@ -175,15 +208,18 @@ fn material(a: &Asset, m: &asset::Material) -> Material {
 /// Converts a decoded asset to a bridge model with its clips. The asset is consumed so that
 /// vertex data is moved, not copied.
 pub fn convert(a: Asset) -> AnimatedModel {
-    let materials: Vec<Material> = a.materials.iter().map(|m| material(&a, m)).collect();
     let Asset {
         name,
         nodes,
         primitives,
         skins,
+        materials,
+        images,
         animations,
         ..
     } = a;
+    let mut pixels = Pixels::new(images, &materials);
+    let materials: Vec<Material> = materials.iter().map(|m| material(&mut pixels, m)).collect();
     let nodes: Vec<Node> = nodes
         .into_iter()
         .map(|n| Node {
@@ -284,7 +320,11 @@ pub fn scene(mut a: Asset) -> (Scene, SceneNotes) {
         name: a.name.clone(),
         ..Scene::default()
     };
+    // Which nodes are placed, and with which model: a mesh that comes up again (the same
+    // sub-meshes with the same materials) shares the model of the first node that had it
     let mut models: std::collections::HashMap<Vec<(i64, usize)>, usize> = Default::default();
+    let mut builds: Vec<(usize, Vec<usize>)> = Vec::new();
+    let mut placed: Vec<(usize, usize)> = Vec::new();
     for (node, prims) in by_node {
         let w = world[node];
         if w.scale.contains(&0.0) {
@@ -299,46 +339,62 @@ pub fn scene(mut a: Asset) -> (Scene, SceneNotes) {
             .map(|&i| (a.primitives[i].mesh_id, a.primitives[i].material))
             .collect();
         let model = *models.entry(key).or_insert_with(|| {
-            // Materials this mesh uses, renumbered
-            let mut used: Vec<usize> = Vec::new();
-            let mut meshes = Vec::new();
-            for &i in &prims {
-                let p = &mut a.primitives[i];
-                let m = used
-                    .iter()
-                    .position(|&u| u == p.material)
-                    .unwrap_or_else(|| {
-                        used.push(p.material);
-                        used.len() - 1
-                    });
-                // Moved out: a mesh that comes up again shares the model built here
-                meshes.push(Mesh {
-                    name: std::mem::take(&mut p.name),
-                    node: 0,
-                    material: m,
-                    positions: std::mem::take(&mut p.positions),
-                    normals: std::mem::take(&mut p.normals),
-                    tangents: std::mem::take(&mut p.tangents),
-                    uvs: std::mem::take(&mut p.uvs),
-                    joints: vec![],
-                    weights: vec![],
-                    skin: None,
-                    indices: std::mem::take(&mut p.indices),
-                });
-            }
-            let materials = used
-                .iter()
-                .map(|&u| material(&a, &a.materials[u]))
-                .collect();
-            scene.models.push(SceneModel::Inline(Model {
-                name: a.nodes[node].name.clone(),
-                nodes: vec![Node::new(a.nodes[node].name.clone(), None)],
-                meshes,
-                materials,
-                skins: vec![],
-            }));
-            scene.models.len() - 1
+            builds.push((node, prims));
+            builds.len() - 1
         });
+        placed.push((node, model));
+    }
+    // The materials each model uses, renumbered, in the order its sub-meshes name them
+    let used: Vec<Vec<usize>> = builds
+        .iter()
+        .map(|(_, prims)| {
+            let mut used: Vec<usize> = Vec::new();
+            for &i in prims {
+                let m = a.primitives[i].material;
+                if !used.contains(&m) {
+                    used.push(m);
+                }
+            }
+            used
+        })
+        .collect();
+    let mut pixels = Pixels::new(
+        std::mem::take(&mut a.images),
+        used.iter().flatten().map(|&u| &a.materials[u]),
+    );
+    for ((node, prims), used) in builds.into_iter().zip(&used) {
+        let mut meshes = Vec::new();
+        for i in prims {
+            let p = &mut a.primitives[i];
+            // Moved out: every primitive belongs to one node, and a node builds one model at most
+            meshes.push(Mesh {
+                name: std::mem::take(&mut p.name),
+                node: 0,
+                material: used.iter().position(|&u| u == p.material).unwrap_or(0),
+                positions: std::mem::take(&mut p.positions),
+                normals: std::mem::take(&mut p.normals),
+                tangents: std::mem::take(&mut p.tangents),
+                uvs: std::mem::take(&mut p.uvs),
+                joints: vec![],
+                weights: vec![],
+                skin: None,
+                indices: std::mem::take(&mut p.indices),
+            });
+        }
+        let materials = used
+            .iter()
+            .map(|&u| material(&mut pixels, &a.materials[u]))
+            .collect();
+        scene.models.push(SceneModel::Inline(Model {
+            name: a.nodes[node].name.clone(),
+            nodes: vec![Node::new(a.nodes[node].name.clone(), None)],
+            meshes,
+            materials,
+            skins: vec![],
+        }));
+    }
+    for (node, model) in placed {
+        let w = world[node];
         scene.instances.push(Instance::new(
             model,
             Transform {
@@ -378,12 +434,15 @@ impl Provider for Nocturne {
             .collect())
     }
 
+    /// The model of [`Provider::load_animated`], without reading or converting its clips.
     fn load(&self, id: &str) -> Result<Model, BoxError> {
-        Ok(self.load_animated(id)?.model)
+        let m = convert(self.load_asset(id, false).map_err(boxed)?).model;
+        m.validate()?;
+        Ok(m)
     }
 
     fn load_animated(&self, id: &str) -> Result<AnimatedModel, BoxError> {
-        let m = convert(self.load_asset(id).map_err(boxed)?);
+        let m = convert(self.load_asset(id, true).map_err(boxed)?);
         m.validate()?;
         Ok(m)
     }
@@ -396,7 +455,7 @@ impl Provider for Nocturne {
                 what: "scenes of demons".to_string(),
             }));
         }
-        let (scene, _) = scene(self.load_asset(id).map_err(boxed)?);
+        let (scene, _) = scene(self.load_asset(id, false).map_err(boxed)?);
         scene.validate()?;
         Ok(scene)
     }
@@ -458,6 +517,248 @@ mod tests {
             }],
             ..Default::default()
         }
+    }
+
+    const W: u32 = 61;
+    const H: u32 = 47;
+    /// Bytes of one synthetic image; no other allocation of the conversion has this size
+    const IMAGE_BYTES: usize = (W * H * 4) as usize;
+
+    /// Two images of the same size; four materials (two on the first image, one on the second,
+    /// one without a texture); five nodes with meshes below the root. Node 4 repeats node 1's
+    /// mesh and materials, and node 5 is scaled to zero.
+    fn textured_asset() -> Asset {
+        let image = |seed: u8| asset::Image {
+            width: W,
+            height: H,
+            rgba: (0..IMAGE_BYTES)
+                .map(|i| (i as u8).wrapping_mul(31) ^ seed)
+                .collect(),
+        };
+        let material = |name: &str, image: Option<usize>| asset::Material {
+            name: name.into(),
+            shader: "s".into(),
+            keywords: vec![],
+            base_color: image.map(|image| asset::TextureRef {
+                image,
+                sampler: asset::Sampler {
+                    mag_filter: 9729,
+                    min_filter: 9987,
+                    wrap_s: 10497,
+                    wrap_t: 10497,
+                },
+                transform: None,
+            }),
+            base_color_factor: [1.0, 0.5, 0.25, 1.0],
+            metallic: 0.0,
+            roughness: 1.0,
+            alpha: asset::AlphaMode::Opaque,
+            vertex_colors: false,
+        };
+        let node = |name: &str, parent, x: f32, scale: f32| AN {
+            name: name.into(),
+            parent,
+            translation: [x, 0.0, 0.0],
+            rotation: [0.0, 0.0, 0.0, 1.0],
+            scale: [scale; 3],
+        };
+        let prim = |node: usize, mesh_id: i64, material: usize| Primitive {
+            name: format!("mesh{mesh_id}_{material}"),
+            mesh_id,
+            node,
+            material,
+            positions: vec![[0.0; 3], [1.0, 0.0, 0.0], [0.0, 1.0, mesh_id as f32]],
+            normals: vec![[0.0, 0.0, 1.0]; 3],
+            uvs: vec![[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]],
+            indices: vec![0, 1, 2],
+            ..Default::default()
+        };
+        Asset {
+            name: "field".into(),
+            nodes: vec![
+                node("root", None, 0.0, 1.0),
+                node("a", Some(0), 1.0, 1.0),
+                node("b", Some(0), 2.0, 1.0),
+                node("c", Some(0), 3.0, 2.0),
+                node("a again", Some(0), 4.0, 1.0),
+                node("hidden", Some(0), 5.0, 0.0),
+            ],
+            primitives: vec![
+                prim(1, 10, 0),
+                prim(1, 10, 3),
+                prim(2, 11, 1),
+                prim(3, 12, 0),
+                prim(3, 12, 2),
+                prim(4, 10, 0),
+                prim(4, 10, 3),
+                prim(5, 13, 2),
+            ],
+            materials: vec![
+                material("first", Some(0)),
+                material("first again", Some(0)),
+                material("second", Some(1)),
+                material("plain", None),
+            ],
+            images: vec![image(0), image(0x5a)],
+            ..Default::default()
+        }
+    }
+
+    /// A material as the conversion built it before: its own copy of the pixels, always.
+    fn reference_material(a: &Asset, m: &asset::Material) -> Material {
+        Material {
+            name: m.name.clone(),
+            base_color: m.base_color.as_ref().map(|t| Image {
+                width: a.images[t.image].width,
+                height: a.images[t.image].height,
+                rgba: a.images[t.image].rgba.clone(),
+            }),
+            base_color_factor: m.base_color_factor,
+            metallic: m.metallic,
+            roughness: m.roughness,
+            alpha: match m.alpha {
+                asset::AlphaMode::Opaque => AlphaMode::Opaque,
+                asset::AlphaMode::Mask(c) => AlphaMode::Mask(c),
+                asset::AlphaMode::Blend => AlphaMode::Blend,
+            },
+            ..Material::default()
+        }
+    }
+
+    /// The scene conversion as it was before: models built as their nodes come up, every material
+    /// of every model with its own copy of the pixels.
+    fn reference_scene(mut a: Asset) -> (Scene, SceneNotes) {
+        let world = crate::transform::world_transforms(&a.nodes);
+        let mut by_node: std::collections::BTreeMap<usize, Vec<usize>> = Default::default();
+        for (i, p) in a.primitives.iter().enumerate() {
+            by_node.entry(p.node).or_default().push(i);
+        }
+        let mut notes = SceneNotes::default();
+        let mut scene = Scene {
+            name: a.name.clone(),
+            ..Scene::default()
+        };
+        let mut models: std::collections::HashMap<Vec<(i64, usize)>, usize> = Default::default();
+        for (node, prims) in by_node {
+            let w = world[node];
+            if w.scale.contains(&0.0) {
+                notes.collapsed += 1;
+                continue;
+            }
+            if w.sheared {
+                notes.sheared += 1;
+            }
+            let key: Vec<(i64, usize)> = prims
+                .iter()
+                .map(|&i| (a.primitives[i].mesh_id, a.primitives[i].material))
+                .collect();
+            let model = *models.entry(key).or_insert_with(|| {
+                let mut used: Vec<usize> = Vec::new();
+                let mut meshes = Vec::new();
+                for &i in &prims {
+                    let p = &mut a.primitives[i];
+                    let m = used
+                        .iter()
+                        .position(|&u| u == p.material)
+                        .unwrap_or_else(|| {
+                            used.push(p.material);
+                            used.len() - 1
+                        });
+                    meshes.push(Mesh {
+                        name: std::mem::take(&mut p.name),
+                        node: 0,
+                        material: m,
+                        positions: std::mem::take(&mut p.positions),
+                        normals: std::mem::take(&mut p.normals),
+                        tangents: std::mem::take(&mut p.tangents),
+                        uvs: std::mem::take(&mut p.uvs),
+                        joints: vec![],
+                        weights: vec![],
+                        skin: None,
+                        indices: std::mem::take(&mut p.indices),
+                    });
+                }
+                let materials = used
+                    .iter()
+                    .map(|&u| reference_material(&a, &a.materials[u]))
+                    .collect();
+                scene.models.push(SceneModel::Inline(Model {
+                    name: a.nodes[node].name.clone(),
+                    nodes: vec![Node::new(a.nodes[node].name.clone(), None)],
+                    meshes,
+                    materials,
+                    skins: vec![],
+                }));
+                scene.models.len() - 1
+            });
+            scene.instances.push(Instance::new(
+                model,
+                Transform {
+                    translation: w.translation,
+                    rotation: w.rotation,
+                    scale: w.scale,
+                },
+            ));
+        }
+        (scene, notes)
+    }
+
+    /// Runs `f` and counts the allocations of exactly one image's size it makes.
+    fn image_allocations<R>(f: impl FnOnce() -> R) -> (R, usize) {
+        crate::alloc_probe::requests(IMAGE_BYTES, f)
+    }
+
+    #[test]
+    fn a_model_copies_the_pixels_only_for_materials_that_share_an_image() {
+        let a = textured_asset();
+        // Before: one copy per material with a texture, next to the asset's own two buffers
+        let (want, before) = image_allocations(|| {
+            a.materials
+                .iter()
+                .map(|m| reference_material(&a, m))
+                .collect::<Vec<Material>>()
+        });
+        assert_eq!((before, before * IMAGE_BYTES), (3, 34_404));
+        // Now: the asset's buffers are handed over, and only the second material on the first
+        // image gets a copy
+        let input = a.clone();
+        let (got, after) = image_allocations(move || convert(input));
+        assert_eq!((after, after * IMAGE_BYTES), (1, 11_468));
+        assert_eq!(got.model.materials, want);
+        assert_eq!(got.validate(), Ok(()));
+        assert_eq!(got.model.meshes.len(), a.primitives.len());
+    }
+
+    #[test]
+    fn a_scene_copies_the_pixels_only_for_models_that_share_an_image() {
+        let a = textured_asset();
+        let input = a.clone();
+        let ((want, want_notes), before) = image_allocations(move || reference_scene(input));
+        // Three models (node 4 shares node 1's; node 5 is collapsed): "a" and "b" use the first
+        // image, "c" both. Before: a copy per use
+        assert_eq!((before, before * IMAGE_BYTES), (4, 45_872));
+        let ((got, got_notes), after) = image_allocations(move || scene(a));
+        // Now: the last user of each image takes the asset's buffer
+        assert_eq!((after, after * IMAGE_BYTES), (2, 22_936));
+        assert_eq!(got, want);
+        assert_eq!(got_notes, want_notes);
+        assert_eq!(
+            (got.models.len(), got.instances.len(), got_notes.collapsed),
+            (3, 4, 1)
+        );
+        assert_eq!(got.validate(), Ok(()));
+    }
+
+    #[test]
+    fn the_model_does_not_depend_on_the_clips() {
+        // `load` reads an asset without its clips and returns the model of this conversion;
+        // `load_animated` converts the same asset with them. The two models are the same.
+        let with_clips = asset();
+        let mut without = asset();
+        without.animations.clear();
+        let animated = convert(with_clips);
+        assert_eq!(animated.animations.len(), 1);
+        assert_eq!(convert(without).model, animated.model);
     }
 
     #[test]

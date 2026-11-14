@@ -83,6 +83,8 @@ fn a_demon_with_euler_clips_validates() {
     let m = p.load_animated("dvl0x07").unwrap();
     assert_eq!(m.validate(), Ok(()));
     assert!(m.animations.iter().all(|a| !a.channels.is_empty()));
+    // `load` does not convert the clips, and gives the same model
+    assert_eq!(p.load("dvl0x07").unwrap(), m.model);
 }
 
 #[test]

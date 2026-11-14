@@ -317,12 +317,15 @@ With the `bridge` feature, `src/bridge.rs` implements [rewrite-bridge](https://g
 - `list` returns every demon (id is the bundle name, `dvl0x01`, kind Character) and every field prefab that has
   something to draw (`f012/f012_002`, kind Level); prefabs of only transforms are left out.
 - `load_animated` returns a validated demon with its clips as `Animation`s and `Channel`s on the model's nodes; `load`
-  is the same model. For a field prefab, `load` gives its static model.
+  is the same model. For a field prefab, `load` gives its static model. Only `load_animated` converts the clips;
+  `load` and `load_scene` do not read them.
 - `load_scene` (field prefabs) returns a scene: one inline model per distinct mesh with its materials, placed by an
   instance with the node's world transform. The game data has almost no instancing (about 66,984 placements of 66,425 models).
   A world matrix with shear cannot be a translation, rotation and scale; it is counted and the closest transform kept.
 - The bridge has no place for texture samplers and tiling, vertex colours or a second UV set. Lights and cameras are not
   read.
+- A bridge `Image` owns its pixels, so a texture is held once per material that uses it, and in a scene once per model
+  whose material uses it; the provider adds no copy beyond those.
 
 To use the provider from another crate, depend on both. Every crate in one build has to end up with the same copy of
 rewrite-bridge, or `Nocturne` implements a `Provider` that your code's `Provider` is not, and the compiler reports
