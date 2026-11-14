@@ -1,2 +1,8 @@
 target/
 /dist
+# What the tool writes, and the game files it reads: the README's examples write exports and
+# textures into the working folder, and the game's bundles have no extension (demons, fields)
+*.glb
+*.png
+/dvl0x*
+/f[0-9]*
