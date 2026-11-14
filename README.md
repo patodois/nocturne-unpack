@@ -34,14 +34,19 @@ Each archive holds the program, this README, both license files and an `INSTALL.
 the checksum of every archive (`shasum -a 256 -c SHA256SUMS` on macOS, `sha256sum -c SHA256SUMS` on Linux,
 `Get-FileHash` on Windows). They are built with the `bridge` feature, so the rewrite-bridge provider is included.
 
-`SHA256SUMS.sig` on the same release signs `SHA256SUMS` with the project's Ed25519 release key, so you can also check
-that the list itself came from here. With the downloads in one folder (needs OpenSSL 3):
+The release workflow (`.github/workflows/release.yml`) builds the four archives and `SHA256SUMS` and publishes them. It
+does not create `SHA256SUMS.sig`: it has no signing step and no key. The signature, made over `SHA256SUMS` with the
+project's Ed25519 release key, is produced outside the workflow and added to the release afterwards (v0.2.0, v0.3.0 and
+v0.4.0 carry one), so a release that has just been published may not have it yet. When it is there, you can also check
+that the list itself came from here. With the archives, `SHA256SUMS` and `SHA256SUMS.sig` in one folder (needs
+OpenSSL 3):
 
 ```sh
 sh tools/verify-release.sh nocturne-unpack v0.4.0 path/to/folder
 ```
 
-The signed text is `osp release patodois/nocturne-unpack <tag>`, a newline, then `SHA256SUMS`, so a signature from another release
+Without `SHA256SUMS.sig` in the folder the script says so and stops; the checksums can still be compared as above. The
+signed text is `osp release patodois/nocturne-unpack <tag>`, a newline, then `SHA256SUMS`, so a signature from another release
 does not verify. The public key is in `RELEASE-KEY.pem` (SHA-256 of its DER form
 `26c35ed9930be42fd266852135e2e81eb74c36ed9a2d0c527e86210a3dcb0946`), and the script carries the same key.
 
@@ -297,18 +302,23 @@ with the most renderers is the default) and everything it uses:
   without a weight channel but with indices has weight 1 on its bone.
 - Sub-meshes become one glTF primitive each, with its own vertices. A skinned renderer becomes a skin: joints are its
   bones, inverse bind matrices are the mesh's bind poses.
-- Textures: DXT1, DXT5, BC7, RGB24, RGBA32 and Alpha8, the largest level only.
+- Textures: DXT1, DXT5, BC7, RGB24, RGBA32 and Alpha8, the largest level only. A `_MainTex` in any other format is an
+  error and the asset does not load (`--no-textures` leaves the textures out).
 - Materials map what is direct. For `Standard`: `_MainTex`, `_Color` (converted to linear), `_Metallic`, `_Glossiness`,
   the alpha mode from the keywords `_ALPHATEST_ON` (with `_Cutoff`), `_ALPHABLEND_ON` and `_ALPHAPREMULTIPLY_ON`. For the
   `Atlus/...` shaders, only `_MainTex` and the alpha mode; metallic 0 and roughness 1 are the neutral choice, not game
-  data. The texture's own filter and wrap modes become the glTF sampler, and a material's tiling and offset become
+  data. Three more values are filled in when a material does not store them, with the Standard shader's defaults and not
+  from the file: `_Cutoff` 0.5 for an alpha-tested material, `_Metallic` 0 and `_Glossiness` 0.5 for a `Standard` one.
+  The texture's own filter and wrap modes become the glTF sampler (mirror-once, which glTF does not have, becomes clamp,
+  and a wrap mode the tool does not know becomes repeat), and a material's tiling and offset become
   `KHR_texture_transform`.
 - Animation. A clip's curves come in three groups, streamed, dense and constant. Every curve is read as keys with the cubic
   polynomial of the segment that starts there, and a binding's path CRC-32 is matched to the paths of the nodes below the
   Animator (all 67 entries of an `Avatar` table of `dvl0x01` match that way). Position, scale and quaternion rotation
   channels are exact: cubic segments become glTF `CUBICSPLINE` keys, which holds the same Hermite segment, straight
   segments `LINEAR`, holds `STEP`. A jump inside a smooth curve is written as a key one float step before the jump.
-  Rotation keys are normalised, as glTF requires. Keys outside the clip's start and stop are cut to its range.
+  Rotation keys are normalised, as glTF requires. Keys outside the clip's start and stop are cut to its range, and key
+  times are counted from the clip's start.
 
 ## rewrite-bridge
 
@@ -446,16 +456,25 @@ All numbers are from one run on a 16 GB machine, one bundle open at a time; "pea
   `check`, `check --kind fields`, `check-bridge`, `check-conformance` (demons with `--compare-load`, and fields) and
   `census --decode` print the same except for times and peak memory (the largest, `check-conformance --kind level`, peaks
   at 2.0 GB in both). The tests pass with Rust 1.88.0 as well as 1.99.
-- Of the 234 demon files exported before the duplicate names were folded into 232 (not repeated since), every one passes the Khronos glTF validator with no errors (warnings only: a skinned mesh
-  below the root, a clip that also animates the node that carries a skinned mesh). A sample of 44 field prefabs passes too.
+- The Khronos glTF validator was last run on the 234 demon files exported before the duplicate names were folded into
+  232, and on a sample of 44 field prefabs: no errors (warnings only: a skinned mesh below the root, a clip that also
+  animates the node that carries a skinned mesh). It has not been run again since: not on the exports of 0.4.0, whose
+  animation output changed (the Euler and initial-value corrections), and not on the exports of the changes listed
+  after 0.4.0 below. So nothing here states that the current exports pass the validator.
 - Renders, made with three.js in headless Chromium: demons in the bind pose and in the middle of a clip, and a field.
   They are not in the repository.
-- `cargo test --release --features bridge` with `NOCTURNE_GAME_DIR` set: 58 library unit tests, 2 CLI unit tests, 11 tests against the install (three
-  of them run the command line), 8 against the install through the bridge (6 provider, 2 conformance) and 2 doctests (this
-  file's Rust code and `Nocturne::open`); without the variable only the unit tests and doctests run. `cargo clippy --all-targets -- -D warnings` is clean,
-  with and without the `bridge` feature.
+- `cargo test --features bridge`: 73 library unit tests, 4 CLI unit tests, 11 tests against the install (three of them
+  run the command line), 8 against the install through the bridge (6 provider, 2 conformance), 1 provider test on a
+  made-up folder and 2 doctests (this file's Rust code and `Nocturne::open`); without `NOCTURNE_GAME_DIR` the tests
+  against the install return at once. `cargo clippy --all-targets -- -D warnings` is clean, with and without the `bridge`
+  feature.
 
 The earlier byte-identical export comparison predates the Euler and initial-value corrections; affected animation output intentionally changes with those fixes, as documented below.
+
+The changes listed after 0.4.0 below were made and tested without the game: the unit tests, the doctests and clippy
+were run on them, the tests against the install were not, and no time, peak or count in this file was measured again.
+The provider now holds one copy fewer of each texture and converts clips only for `load_animated`; its times and peaks
+above were measured with the earlier behaviour.
 
 ## Format notes
 
@@ -490,6 +509,10 @@ and `src/prefab.rs` describe the layouts.
 - **Meshes.** Vertex streams start 16-byte aligned; `dimension` carries the component count in its low four bits (a
   half-float normal channel has dimension `0x34`); bone indices are `UInt32` and weights `Float`, two or four per
   vertex, or indices alone for a single bone. Index buffers are read as 16-bit (32-bit is supported), sub-meshes are triangle lists, and no mesh uses mesh compression.
+  The format number of a vertex channel is read with Unity 2019's numbering for every bundle: the code does not look at
+  the bundle's Unity version. For the 29 bundles written by Unity 2018.4.13f1, a format whose number or width differs
+  between the two versions would be misread without an error, and whether any of their meshes uses one is not verified
+  (that all meshes decode does not show it).
 - **Quaternion curves.** In the 94,806 rotation channels of the demons no two successive keys lie in opposite hemispheres
   (`q` and `-q`), as Unity's importer keeps its quaternion keys continuous. The tool negates such a key (and its
   tangents) if it ever meets one, so that every player interpolates the short way, and counts it in the report.
@@ -524,12 +547,13 @@ Counts come from `check` (all 257 demon bundles, 232 with a model) and `check --
   stop (1,512) are cut to the range, with the value the curve has at the edge.
 - Clip settings: loop flags, events, root motion and orientation settings, and the animator controller's states,
   transitions and parameters (only its list of clips is used). The bridge and glTF have no loop flag.
-- Geometry: the second UV set (42 meshes), vertex colours (407 meshes whose shader does not read them, 24 whose shader
-  does but blends them with parameters that are not mapped), blend shapes (the demons have none), the `h_*` nodes as
+- Geometry: the second UV set (42 primitives), vertex colours (407 primitives whose shader does not read them, 24 whose
+  shader does but blends them with parameters that are not mapped), blend shapes (the demons have none), the `h_*` nodes as
   attachment points (they stay plain nodes, no socket is declared because the data does not say what they are).
   Renderers on inactive objects or disabled are skipped (435); one renderer has no mesh. In 34 skinned renderers the
   root bone is not above all the bones, so no skeleton is declared (glTF requires that); in one a bone sits in several
-  slots and is merged.
+  slots and is merged. A primitive here is one sub-mesh of one renderer, which is what these counters count: a mesh
+  with several sub-meshes, or drawn by several renderers, is counted once for each.
 - Materials: for the `Atlus/...` shaders everything except `_MainTex` and the alpha mode (the shaders have 112 to 129
   properties, among them the `_Toon` and `_Ramp1` textures, colours such as `_Color`, `_MainColor` and `_Specular`,
   fog and light vectors), the cull mode and blend state of the shader's passes (nothing is double sided), render queue
@@ -548,10 +572,11 @@ Counts come from `check` (all 257 demon bundles, 232 with a model) and `check --
   cameras, colliders, particle systems, and the legacy `Animation` components (15,011 in the install) with their
   clips.
 - Of 182 field bundles, 20 have no Unity model at all. In the others: renderers on inactive objects (4,970) are skipped,
-  843 renderers have no mesh, 19,128 meshes have a second UV set, 42 sub-meshes have no material, 15 have no entry in
-  the renderer's list (the last material is used), 9,450 meshes carry vertex colours the shader does not read and 78,013
-  carry ones it reads (not mapped), one has blend shapes. Texture tiling is not applied in the bridge (no field for it)
-  and was not set on any field material.
+  843 renderers have no mesh, 19,128 primitives (sub-meshes of renderers, as for the demons) have a second UV set, 42
+  bundles have at least one sub-mesh without a material (counted once per bundle), 15 renderers have more sub-meshes
+  than materials (the last material is used), 9,450 primitives carry vertex colours the shader does not read and 78,013
+  carry ones it reads (not mapped), and the mesh of one renderer has blend shapes. Texture tiling is not applied in the
+  bridge (no field for it) and was not set on any field material.
 - 1 of 1,066 prefabs (`f804_060`) has a skinned renderer whose mesh has no bone weights; it is drawn rigid.
 
 
@@ -586,6 +611,17 @@ Counts come from `check` (all 257 demon bundles, 232 with a model) and `check --
   quaternions checks the tolerance, and a curve that needs more is an error.
 - The first value streamed before a clip's first key is kept, the angular travel inside an Euler interval is bounded,
   and a mesh whose submeshes repeat the same indices over and over is refused once the copies pass a size limit.
+
+## Changes after 0.4.0 (not released)
+
+- A clip that starts above zero could be exported with key times before its start, which came out negative; its times
+  now begin at 0. Clips that start at zero are written as before.
+- A primitive that uses index 65535 gets 32-bit indices (glTF does not allow that value as a 16-bit index).
+- The provider looks an id up in the game folder before reading it as a path, `load` and `load_scene` no longer convert
+  the clips, and the conversion keeps one copy fewer of each texture.
+- `~/` is expanded from `USERPROFILE` where `HOME` is not set; `check-bridge --kind` refuses a kind it does not know;
+  `check-conformance` takes `--game=DIR` anywhere among its options.
+- `.gitignore` and the public-tree gate know `.glb`, `.png` and files that start with the UnityFS signature.
 
 ## Disclaimer
 

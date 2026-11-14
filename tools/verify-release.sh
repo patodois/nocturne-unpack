@@ -9,6 +9,11 @@
 # The signed message is "osp release patodois/<repo> <tag>\n" followed by SHA256SUMS, so a
 # signature from another release or another project does not verify.
 #
+# The release workflow (.github/workflows/release.yml) publishes the archives and SHA256SUMS only:
+# it has no signing step and no key. SHA256SUMS.sig is made outside the workflow and added to the
+# release afterwards, so a release that was just published may not have it yet. Without it this
+# script cannot say where SHA256SUMS came from, so it stops and says so.
+#
 # Needs OpenSSL 3 (on macOS: brew install openssl@3, or set OPENSSL to its path).
 set -eu
 repo=$1
@@ -24,6 +29,18 @@ fi
 key='-----BEGIN PUBLIC KEY-----
 MCowBQYDK2VwAyEA8MKbcbjNbRSBQPWhWHtT8YYexfkRFDM0PCpfjDxLAaE=
 -----END PUBLIC KEY-----'
+
+for needed in SHA256SUMS SHA256SUMS.sig; do
+    if [ ! -f "$folder/$needed" ]; then
+        echo "$folder has no $needed." >&2
+        if [ "$needed" = SHA256SUMS.sig ]; then
+            echo "The release workflow does not create it: it is added to the release afterwards, so" >&2
+            echo "download it from the release page, or wait for it if the release is new. Nothing was" >&2
+            echo "verified; sha256sum -c SHA256SUMS compares the checksums without the signature." >&2
+        fi
+        exit 1
+    fi
+done
 
 # The key and the signed message reach OpenSSL through file descriptors; nothing is written to disk
 { printf 'osp release patodois/%s %s\n' "$repo" "$tag"; cat "$folder/SHA256SUMS"; } |
