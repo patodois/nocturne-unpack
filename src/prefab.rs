@@ -13,8 +13,8 @@ use std::rc::Rc;
 use anyhow::{anyhow, ensure, Context, Result};
 
 use crate::asset::{
-    self, space, AlphaMode, Animation, Asset, Image, Interpolation, Node, Primitive, Sampler, Skin,
-    Target, TextureRef,
+    self, space, AlphaMode, Animation, Asset, Image, Interpolation, Node, Primitive, Report,
+    Sampler, Skin, Target, TextureRef,
 };
 use crate::bundle::{class, Bundle};
 use crate::clip::{self, Interp, Prop};
@@ -677,119 +677,106 @@ impl Loader<'_> {
         }
         for id in clip_ids {
             let c: AnimationClip = self.bundle.read(id)?;
-            let anim = self
-                .convert_clip(&c, &by_hash)
+            let anim = convert_clip(&mut self.asset.report, &c, &by_hash)
                 .with_context(|| format!("clip {:?}", c.m_Name))?;
             self.asset.animations.push(anim);
         }
         Ok(())
     }
+}
 
-    fn convert_clip(
-        &mut self,
-        c: &AnimationClip,
-        by_hash: &HashMap<u32, usize>,
-    ) -> Result<Animation> {
-        ensure!(!c.m_Legacy, "legacy animation clip");
-        let curves = clip::read_curves(c)?;
-        let mut budget = clip::ChannelBudget::new(c);
-        let slots = clip::slots(&c.m_ClipBindingConstant.genericBindings);
-        let total: usize = slots.iter().map(|s| s.curve_count).sum();
-        ensure!(
-            total == curves.curves.len(),
-            "bindings own {total} curves but the clip has {}",
-            curves.curves.len()
+/// Converts one clip to an animation on the nodes `by_hash` names (path hash to node index), with
+/// its key times measured from the clip's start. What is not carried over is counted in `report`.
+fn convert_clip(
+    report: &mut Report,
+    c: &AnimationClip,
+    by_hash: &HashMap<u32, usize>,
+) -> Result<Animation> {
+    ensure!(!c.m_Legacy, "legacy animation clip");
+    let curves = clip::read_curves(c)?;
+    let mut budget = clip::ChannelBudget::new(c);
+    let slots = clip::slots(&c.m_ClipBindingConstant.genericBindings);
+    let total: usize = slots.iter().map(|s| s.curve_count).sum();
+    ensure!(
+        total == curves.curves.len(),
+        "bindings own {total} curves but the clip has {}",
+        curves.curves.len()
+    );
+    report.add_n(
+        "animation keys outside the clip's time range",
+        curves.trimmed_keys,
+    );
+    if curves.gaps > 0 {
+        report.add_n(
+            "animation segments that miss the next key (reader bug?)",
+            curves.gaps,
         );
-        self.asset.report.add_n(
-            "animation keys outside the clip's time range",
-            curves.trimmed_keys,
-        );
-        if curves.gaps > 0 {
-            self.asset.report.add_n(
-                "animation segments that miss the next key (reader bug?)",
-                curves.gaps,
-            );
-        }
-        for (what, n) in clip::unread_bindings(&slots) {
-            self.asset
-                .report
-                .add_n(format!("animation binding: {what}"), n);
-        }
-        let start = curves.start;
-        let duration = (curves.stop - start).max(0.0);
-        let mut channels: Vec<asset::Channel> = Vec::new();
-        let mut taken = std::collections::HashSet::new();
-        for s in &slots {
-            let Some(prop) = s.prop else { continue };
-            let Some(&node) = by_hash.get(&s.binding.path) else {
-                self.asset
-                    .report
-                    .add("animation binding for a path not in the hierarchy");
-                continue;
-            };
-            let comps: Vec<&clip::Curve> = (0..s.curve_count)
-                .map(|k| &curves.curves[s.first_curve + k])
-                .collect();
-            if comps.iter().any(|c| c.keys.is_empty()) {
-                self.asset.report.add("animation curve without keys");
-                continue;
-            }
-            let mut ch = if prop == Prop::Euler {
-                let Some(order) = clip::euler_order(s.binding.customType) else {
-                    self.asset
-                        .report
-                        .add("Euler curve with an unknown rotation order");
-                    continue;
-                };
-                budget.build_euler_channel(&comps, order)?
-            } else {
-                budget.build_channel(prop, &comps)?
-            };
-            if start != 0.0 {
-                for t in ch.times.iter_mut() {
-                    *t -= start;
-                }
-            }
-            self.asset.report.add_n(
-                "jumps inside smooth curves, written one float step early",
-                ch.steps_encoded,
-            );
-            self.asset.report.add_n(
-                "rotation keys negated to stay in the hemisphere of the key before",
-                ch.hemisphere_flips,
-            );
-            if prop == Prop::Euler && ch.times.len() > 1 {
-                self.asset
-                    .report
-                    .add("Euler rotation curves converted to quaternion keys");
-                self.asset
-                    .report
-                    .add_n("extra keys added to Euler curves", ch.approximated);
-                if ch.max_error_deg > clip::EULER_TOLERANCE_DEG {
-                    self.asset
-                        .report
-                        .add("Euler curves still above the angle tolerance between keys");
-                }
-            }
-            let target = match prop {
-                Prop::Position => Target::Translation,
-                Prop::Rotation | Prop::Euler => Target::Rotation,
-                Prop::Scale => Target::Scale,
-            };
-            if !taken.insert((node, target)) {
-                self.asset
-                    .report
-                    .add("second binding for a node property in one clip");
-                continue;
-            }
-            channels.push(to_gltf_channel(node, target, ch));
-        }
-        Ok(Animation {
-            name: c.m_Name.clone(),
-            duration,
-            channels,
-        })
     }
+    for (what, n) in clip::unread_bindings(&slots) {
+        report.add_n(format!("animation binding: {what}"), n);
+    }
+    let start = curves.start;
+    let duration = (curves.stop - start).max(0.0);
+    let mut channels: Vec<asset::Channel> = Vec::new();
+    let mut taken = std::collections::HashSet::new();
+    for s in &slots {
+        let Some(prop) = s.prop else { continue };
+        let Some(&node) = by_hash.get(&s.binding.path) else {
+            report.add("animation binding for a path not in the hierarchy");
+            continue;
+        };
+        let comps: Vec<&clip::Curve> = (0..s.curve_count)
+            .map(|k| &curves.curves[s.first_curve + k])
+            .collect();
+        if comps.iter().any(|c| c.keys.is_empty()) {
+            report.add("animation curve without keys");
+            continue;
+        }
+        let mut ch = if prop == Prop::Euler {
+            let Some(order) = clip::euler_order(s.binding.customType) else {
+                report.add("Euler curve with an unknown rotation order");
+                continue;
+            };
+            budget.build_euler_channel(&comps, order)?
+        } else {
+            budget.build_channel(prop, &comps)?
+        };
+        if start != 0.0 {
+            for t in ch.times.iter_mut() {
+                *t -= start;
+            }
+        }
+        report.add_n(
+            "jumps inside smooth curves, written one float step early",
+            ch.steps_encoded,
+        );
+        report.add_n(
+            "rotation keys negated to stay in the hemisphere of the key before",
+            ch.hemisphere_flips,
+        );
+        if prop == Prop::Euler && ch.times.len() > 1 {
+            report.add("Euler rotation curves converted to quaternion keys");
+            report.add_n("extra keys added to Euler curves", ch.approximated);
+            if ch.max_error_deg > clip::EULER_TOLERANCE_DEG {
+                report.add("Euler curves still above the angle tolerance between keys");
+            }
+        }
+        let target = match prop {
+            Prop::Position => Target::Translation,
+            Prop::Rotation | Prop::Euler => Target::Rotation,
+            Prop::Scale => Target::Scale,
+        };
+        if !taken.insert((node, target)) {
+            report.add("second binding for a node property in one clip");
+            continue;
+        }
+        channels.push(to_gltf_channel(node, target, ch));
+    }
+    Ok(Animation {
+        name: c.m_Name.clone(),
+        duration,
+        channels,
+    })
 }
 
 /// Renumbers bone slots to joints and adds up the weights of slots that became the same joint.
@@ -909,6 +896,150 @@ mod tests {
             keys,
             initial: None,
         }
+    }
+
+    /// A clip of streamed curves that plays from `start` to `stop` and drives one Transform
+    /// property (`attribute` 1 position, 4 Euler angles) of the node whose path hash is 7.
+    /// `frames` are `(time, [(curve, [a, b, c, d])])`, as the streamed clip stores them.
+    type Frame<'a> = (f32, &'a [(u32, [f32; 4])]);
+    fn streamed_clip(attribute: u32, start: f32, stop: f32, frames: &[Frame]) -> AnimationClip {
+        let mut data = Vec::new();
+        for (time, keys) in frames {
+            data.push(time.to_bits());
+            data.push(keys.len() as u32);
+            for (curve, co) in keys.iter() {
+                data.push(*curve);
+                data.extend(co.iter().map(|x| x.to_bits()));
+            }
+        }
+        let mut muscle = crate::unity::ClipMuscleConstant::default();
+        muscle.m_Clip.data.m_StreamedClip.data = data;
+        muscle.m_Clip.data.m_StreamedClip.curveCount = 3;
+        muscle.m_StartTime = start;
+        muscle.m_StopTime = stop;
+        AnimationClip {
+            m_Name: "synthetic".into(),
+            m_Legacy: false,
+            m_Compressed: false,
+            m_RotationCurves: vec![],
+            m_CompressedRotationCurves: vec![],
+            m_EulerCurves: vec![],
+            m_PositionCurves: vec![],
+            m_ScaleCurves: vec![],
+            m_FloatCurves: vec![],
+            m_SampleRate: 30.0,
+            m_WrapMode: 0,
+            m_MuscleClip: muscle,
+            m_ClipBindingConstant: crate::unity::ClipBindingConstant {
+                genericBindings: vec![crate::unity::GenericBinding {
+                    path: 7,
+                    attribute,
+                    typeID: clip::TYPE_TRANSFORM,
+                    customType: 0,
+                    isPPtrCurve: 0,
+                }],
+            },
+        }
+    }
+
+    /// The key times of the only channel a synthetic clip exports, and the `min` that the `.glb`
+    /// states for them.
+    fn exported_times(c: &AnimationClip) -> (Vec<f32>, f64) {
+        let by_hash: HashMap<u32, usize> = [(7, 0)].into();
+        let mut report = Report::default();
+        let anim = convert_clip(&mut report, c, &by_hash).unwrap();
+        assert_eq!(anim.channels.len(), 1);
+        let times = anim.channels[0].times.clone();
+        let asset = Asset {
+            name: "t".into(),
+            nodes: vec![Node {
+                name: "n".into(),
+                parent: None,
+                translation: [0.0; 3],
+                rotation: [0.0, 0.0, 0.0, 1.0],
+                scale: [1.0; 3],
+            }],
+            animations: vec![anim],
+            ..Default::default()
+        };
+        let glb = crate::gltf::to_glb(&asset).unwrap();
+        let jlen = u32::from_le_bytes(glb[12..16].try_into().unwrap()) as usize;
+        let json: serde_json::Value = serde_json::from_slice(&glb[20..20 + jlen]).unwrap();
+        let input = json["animations"][0]["samplers"][0]["input"]
+            .as_u64()
+            .unwrap() as usize;
+        let min = json["accessors"][input]["min"][0].as_f64().unwrap();
+        (times, min)
+    }
+
+    #[test]
+    fn a_clip_that_starts_above_zero_exports_times_from_zero() {
+        const HOLD: [f32; 4] = [0.0; 4];
+        // The clip plays from 1 s to 2 s. Curve 0 is 5 before its first key, then the line
+        // 2 + (t - 0.5) from its key at 0.5 s, which is before the clip's start: at the start it is
+        // worth 2.5, and the 5 lies outside the clip. In the second clip the first key sits exactly
+        // on the start. Both as a position and as Euler angles.
+        let before: &[Frame] = &[
+            (f32::MIN, &[(0, [0.0, 0.0, 0.0, 5.0]), (1, HOLD), (2, HOLD)]),
+            (0.5, &[(0, [0.0, 0.0, 1.0, 2.0]), (1, HOLD), (2, HOLD)]),
+            (2.0, &[(0, [0.0, 0.0, 0.0, 3.5]), (1, HOLD), (2, HOLD)]),
+            (f32::INFINITY, &[]),
+        ];
+        let at_start: &[Frame] = &[
+            (f32::MIN, &[(0, [0.0, 0.0, 0.0, 5.0]), (1, HOLD), (2, HOLD)]),
+            (1.0, &[(0, [0.0, 0.0, 1.0, 2.5]), (1, HOLD), (2, HOLD)]),
+            (2.0, &[(0, [0.0, 0.0, 0.0, 3.5]), (1, HOLD), (2, HOLD)]),
+            (f32::INFINITY, &[]),
+        ];
+        for (name, frames) in [
+            ("key before the start", before),
+            ("key at the start", at_start),
+        ] {
+            for attribute in [1, 4] {
+                let c = streamed_clip(attribute, 1.0, 2.0, frames);
+                let (times, min) = exported_times(&c);
+                assert_eq!(times[0], 0.0, "{name}, attribute {attribute}: {times:?}");
+                assert!(
+                    times.windows(2).all(|w| w[0] < w[1]),
+                    "{name}, attribute {attribute}: {times:?}"
+                );
+                assert_eq!(*times.last().unwrap(), 1.0, "{name}: {times:?}");
+                assert!(min >= 0.0, "{name}, attribute {attribute}: glb min {min}");
+            }
+            // The position channel is the line from 2.5 to 3.5 over the clip's one second (x is
+            // negated for glTF's space)
+            let c = streamed_clip(1, 1.0, 2.0, frames);
+            let by_hash: HashMap<u32, usize> = [(7, 0)].into();
+            let anim = convert_clip(&mut Report::default(), &c, &by_hash).unwrap();
+            let ch = &anim.channels[0];
+            assert_eq!(ch.times, [0.0, 1.0], "{name}");
+            assert_eq!(ch.sample(0.0)[0], -2.5, "{name}");
+            assert_eq!(ch.sample(0.5)[0], -3.0, "{name}");
+            assert_eq!(ch.sample(1.0)[0], -3.5, "{name}");
+        }
+    }
+
+    #[test]
+    fn a_clip_that_starts_at_zero_keeps_its_leading_hold() {
+        // Unchanged by the fix above: the value before the first key is held from the clip's start
+        // (0 s) to that key
+        const HOLD: [f32; 4] = [0.0; 4];
+        let frames: &[Frame] = &[
+            (f32::MIN, &[(0, [0.0, 0.0, 0.0, 5.0]), (1, HOLD), (2, HOLD)]),
+            (0.5, &[(0, [0.0, 0.0, 1.0, 2.0]), (1, HOLD), (2, HOLD)]),
+            (2.0, &[(0, [0.0, 0.0, 0.0, 3.5]), (1, HOLD), (2, HOLD)]),
+            (f32::INFINITY, &[]),
+        ];
+        let c = streamed_clip(1, 0.0, 2.0, frames);
+        let by_hash: HashMap<u32, usize> = [(7, 0)].into();
+        let anim = convert_clip(&mut Report::default(), &c, &by_hash).unwrap();
+        let ch = &anim.channels[0];
+        assert_eq!(ch.times.len(), 4, "{:?}", ch.times);
+        assert_eq!((ch.times[0], ch.times[2], ch.times[3]), (0.0, 0.5, 2.0));
+        assert!(ch.times[1] < 0.5 && ch.times[1] > 0.4999);
+        assert_eq!(ch.sample(0.25)[0], -5.0);
+        assert_eq!(ch.sample(0.5)[0], -2.0);
+        assert_eq!(ch.sample(2.0)[0], -3.5);
     }
 
     #[test]

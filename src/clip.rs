@@ -76,7 +76,9 @@ impl Key {
 pub struct Curve {
     /// Keys by increasing time.
     pub keys: Vec<Key>,
-    /// The value before the first key, from the streamed clip's leading frame.
+    /// The value before the first key, from the streamed clip's leading frame. In the curves of
+    /// [`read_curves`], which are cut to the clip's range, it is `None` when a key sits at the
+    /// clip's start: the leading value then lies before the range.
     pub initial: Option<f32>,
 }
 
@@ -129,6 +131,7 @@ impl Curve {
 
     /// Cuts the curve to `start..=stop`: the key in effect at `start` moves there (its polynomial
     /// re-expressed from the new origin, which changes nothing) and later keys beyond `stop` go.
+    /// The leading value becomes a key at `start` when it is what the curve is worth there.
     /// Returns how many keys were affected.
     fn trim(&mut self, start: f32, stop: f32) -> usize {
         let mut touched = 0;
@@ -170,6 +173,12 @@ impl Curve {
                 self.keys
                     .push(Key::constant(stop, last.at(stop - last.time)));
             }
+        }
+        // With a key at `start`, the leading value lies before the range. Kept, it made the channel
+        // builders add a key at time 0 for it (`union_times`), which is before the start of a clip
+        // that starts above zero and came out as a negative time.
+        if self.keys.first().is_some_and(|k| k.time <= start) {
+            self.initial = None;
         }
         touched
     }
@@ -1053,8 +1062,9 @@ mod tests {
         let cc = read_curves(&c).unwrap();
         assert_eq!(cc.curves.len(), 4);
         assert_eq!(cc.gaps, 0);
-        // Curve 0 reproduces the polynomial; the leading value is kept apart
-        assert_eq!(cc.curves[0].initial, Some(5.0));
+        // Curve 0 reproduces the polynomial. Its leading value is not a key, and it is not kept
+        // either: the key at the clip's start replaces it
+        assert_eq!(cc.curves[0].initial, None);
         assert_eq!(cc.curves[0].keys.len(), 2);
         assert!((cc.curves[0].value(0.5) - 0.5).abs() < 1e-6);
         assert_eq!(cc.curves[0].value(1.0), 0.0);
@@ -1321,6 +1331,66 @@ mod streamed_initial_regression {
         let ch = build_channel(Prop::Position, &[&c, &moving, &moving]).unwrap();
         let at = sample_channel(&ch, 0.25);
         assert!((at[0] - 9.0).abs() < 1e-5 && (at[1] - 0.25).abs() < 1e-5);
+    }
+}
+
+#[cfg(test)]
+mod start_above_zero_regression {
+    use super::*;
+    /// A line that reaches 3.5 at 2 s, cut to a clip that plays from 1 s: the leading value 5 lies
+    /// before the key in effect at the start, whether that key was before the start or exactly on
+    /// it.
+    fn cut(first_key: f32) -> Curve {
+        let mut c = Curve {
+            initial: Some(5.0),
+            keys: vec![
+                Key {
+                    time: first_key,
+                    a: 0.0,
+                    b: 0.0,
+                    c: 1.0,
+                    d: 3.5 - (2.0 - first_key),
+                },
+                Key::constant(2.0, 3.5),
+            ],
+        };
+        c.trim(1.0, 2.0);
+        c
+    }
+    #[test]
+    fn no_key_is_written_before_the_start_of_the_clip() {
+        for first_key in [0.5, 1.0] {
+            let c = cut(first_key);
+            assert_eq!(c.initial, None);
+            assert_eq!((c.keys[0].time, c.keys[0].d), (1.0, 2.5));
+            let ch = build_channel(Prop::Position, &[&c, &c, &c]).unwrap();
+            assert_eq!(ch.times, [1.0, 2.0], "first key at {first_key}");
+            assert_eq!(ch.steps_encoded, 0);
+            let ch = build_euler_channel(&[&c, &c, &c], [0, 1, 2]).unwrap();
+            assert_eq!(ch.times[0], 1.0, "first key at {first_key}");
+            assert!(ch.times.windows(2).all(|w| w[0] < w[1]));
+        }
+    }
+    #[test]
+    fn a_leading_value_still_in_effect_at_the_start_is_kept_as_a_key() {
+        // The first key comes after the start, so the leading value is what plays until then
+        let mut c = Curve {
+            initial: Some(5.0),
+            keys: vec![Key::constant(1.5, 2.0), Key::constant(2.0, 3.0)],
+        };
+        c.trim(1.0, 2.0);
+        assert_eq!((c.keys[0].time, c.keys[0].d), (1.0, 5.0));
+        let ch = build_channel(Prop::Scale, &[&c, &c, &c]).unwrap();
+        assert_eq!(ch.times, [1.0, 1.5, 2.0]);
+        assert_eq!(&ch.values[..3], &[5.0; 3]);
+        // The same leading value as the first key's: no key is added, and the value stays
+        let mut c = Curve {
+            initial: Some(2.0),
+            keys: vec![Key::constant(1.5, 2.0), Key::constant(2.0, 3.0)],
+        };
+        c.trim(1.0, 2.0);
+        assert_eq!(c.initial, Some(2.0));
+        assert_eq!(c.keys[0].time, 1.5);
     }
 }
 
