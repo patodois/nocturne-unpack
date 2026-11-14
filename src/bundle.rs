@@ -60,8 +60,10 @@ impl Bundle {
     /// Opens a bundle and parses its main serialized file.
     pub fn open(path: &Path) -> Result<Bundle> {
         let file = File::open(path).with_context(|| format!("open {}", path.display()))?;
-        // SAFETY: the game files are not modified while a tool runs; a concurrent change
-        // would at worst give a decoding error.
+        // SAFETY: a map is sound only while nobody else changes the file. The game files are not
+        // modified while a tool runs. If one is all the same (Steam updating or validating the
+        // game during a sweep), changed bytes give a decoding error, but a file cut short under
+        // the map ends the process with a bus error (SIGBUS) the moment the missing part is read.
         let map = unsafe { Mmap::map(&file)? };
         let reader = unity_bundle::Bundle::new(map)
             .with_context(|| format!("read bundle header of {}", path.display()))?;

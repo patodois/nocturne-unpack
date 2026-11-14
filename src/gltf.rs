@@ -248,7 +248,9 @@ pub fn to_glb(a: &Asset) -> Result<Vec<u8>> {
                     json!(b.floats(&f, "VEC4", 4, Some(34962), false)),
                 );
             }
-            let wide = p.indices.iter().any(|&i| i > 65535);
+            // 65535 is not a valid unsigned short index: glTF keeps the largest value of an index
+            // type for primitive restart
+            let wide = p.indices.iter().any(|&i| i >= 65535);
             let (bytes, comp): (Vec<u8>, u32) = if wide {
                 (
                     p.indices.iter().flat_map(|i| i.to_le_bytes()).collect(),
@@ -394,6 +396,61 @@ mod tests {
         assert_eq!(glb.len(), 20 + jlen);
         let json: Value = serde_json::from_slice(&glb[20..20 + jlen]).unwrap();
         assert!(json.get("buffers").is_none() && json.get("accessors").is_none());
+    }
+
+    /// The component type of the index accessor of a `.glb` whose only primitive has `vertices`
+    /// vertices and one triangle that uses the last of them.
+    fn index_component_type(vertices: u32) -> u64 {
+        let a = Asset {
+            name: "t".into(),
+            nodes: vec![Node {
+                name: "n".into(),
+                parent: None,
+                translation: [0.0; 3],
+                rotation: [0.0, 0.0, 0.0, 1.0],
+                scale: [1.0; 3],
+            }],
+            primitives: vec![Primitive {
+                name: "p".into(),
+                node: 0,
+                material: 0,
+                positions: (0..vertices).map(|i| [i as f32, 0.0, 0.0]).collect(),
+                indices: vec![0, 1, vertices - 1],
+                ..Default::default()
+            }],
+            materials: vec![Material {
+                name: "m".into(),
+                shader: "s".into(),
+                keywords: vec![],
+                base_color: None,
+                base_color_factor: [1.0; 4],
+                metallic: 0.0,
+                roughness: 1.0,
+                alpha: AlphaMode::Opaque,
+                vertex_colors: false,
+            }],
+            ..Default::default()
+        };
+        let glb = to_glb(&a).unwrap();
+        let jlen = u32::from_le_bytes(glb[12..16].try_into().unwrap()) as usize;
+        let json: Value = serde_json::from_slice(&glb[20..20 + jlen]).unwrap();
+        let indices = json["meshes"][0]["primitives"][0]["indices"]
+            .as_u64()
+            .unwrap() as usize;
+        json["accessors"][indices]["componentType"]
+            .as_u64()
+            .unwrap()
+    }
+
+    #[test]
+    fn index_65535_is_not_written_as_a_16_bit_index() {
+        // glTF keeps the largest value of an index type for primitive restart, so 65535 cannot be
+        // an unsigned short index: a primitive that uses all 65,536 vertices a 16-bit Unity mesh
+        // can hold needs 32-bit indices
+        assert_eq!(index_component_type(65_536), 5125);
+        assert_eq!(index_component_type(65_537), 5125);
+        // One vertex fewer (largest index 65534) still fits
+        assert_eq!(index_component_type(65_535), 5123);
     }
 
     #[test]

@@ -1,5 +1,6 @@
 //! The rewrite-bridge provider against a real install (feature `bridge`). Skipped unless
-//! `NOCTURNE_GAME_DIR` points at the game folder.
+//! `NOCTURNE_GAME_DIR` points at the game folder, except for the one test that makes its own
+//! folder.
 
 #![cfg(feature = "bridge")]
 
@@ -125,4 +126,26 @@ fn open_takes_anything_that_is_a_path() {
         counts.iter().all(|&n| n == counts[0] && n > 200),
         "{counts:?}"
     );
+}
+
+#[test]
+fn an_id_names_the_bundle_of_the_install_before_a_file_of_the_working_folder() {
+    // Needs no game: a made-up game folder with the manifest and one file under a bundle's name.
+    // Tests run in the package root, which holds a Cargo.toml, so that is the name it gets.
+    assert!(std::path::Path::new("Cargo.toml").is_file());
+    let game = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("provider-ids-game");
+    let pc = game.join("smt3hd_Data/StreamingAssets/PC");
+    std::fs::create_dir_all(&pc).unwrap();
+    std::fs::write(pc.join("Pc"), b"made-up manifest").unwrap();
+    std::fs::write(pc.join("Cargo.toml"), b"made-up file, not a bundle").unwrap();
+    let p = Nocturne::open(&game).unwrap();
+    // Neither file is a bundle, and the error names the one the provider opened: the install's
+    let e = p.load("Cargo.toml").unwrap_err().to_string();
+    let wanted = pc.join("Cargo.toml").display().to_string();
+    assert!(e.contains(&wanted), "{e}");
+    // An id the install does not have is still read as a path, as it was before
+    let e = p.load("LICENSE-MIT").unwrap_err().to_string();
+    assert!(e.contains("LICENSE-MIT") && !e.contains("no bundle"), "{e}");
+    let e = p.load("no-such-bundle").unwrap_err().to_string();
+    assert!(e.contains("no bundle"), "{e}");
 }

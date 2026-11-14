@@ -134,7 +134,7 @@ impl Nocturne {
             Some((b, stem)) => (b, Some(format!("/{stem}.prefab"))),
             None => (id, None),
         };
-        let bundle = Bundle::open(&self.install.resolve(bundle_name)?)?;
+        let bundle = Bundle::open(&self.install.resolve_id(bundle_name)?)?;
         let which = match &which {
             Some(w) => prefab::Which::Named(w),
             None => prefab::Which::Main,

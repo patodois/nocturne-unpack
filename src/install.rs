@@ -36,10 +36,16 @@ fn has_manifest(dir: &Path) -> bool {
         .unwrap_or(false)
 }
 
-/// Expands a leading `~/`.
+/// Expands a leading `~/` to the home folder: `HOME`, or `USERPROFILE` where `HOME` is not set
+/// (a plain Windows shell sets only the latter). With neither, the path is left as written.
 pub fn expand_home(p: &Path) -> PathBuf {
+    expand_home_with(p, |name| std::env::var_os(name))
+}
+
+/// [`expand_home`] with the environment given as a lookup.
+fn expand_home_with(p: &Path, var: impl Fn(&str) -> Option<std::ffi::OsString>) -> PathBuf {
     if let Ok(rest) = p.strip_prefix("~") {
-        if let Some(home) = std::env::var_os("HOME") {
+        if let Some(home) = var("HOME").or_else(|| var("USERPROFILE")) {
             return PathBuf::from(home).join(rest);
         }
     }
@@ -174,9 +180,22 @@ impl Install {
         }
     }
 
+    /// The file of the bundle an id names, for ids that come from a listing and not from the
+    /// command line (the provider's): the install's own bundle of that name, the base game's
+    /// before a DLC folder's. Only a name the install does not have is read as a path, the way
+    /// [`Install::resolve`] reads it, so a file of the working folder that happens to carry a
+    /// bundle's name does not replace the game's.
+    pub fn resolve_id(&self, id: &str) -> Result<PathBuf> {
+        match self.bundle_path(id) {
+            Some(p) => Ok(p),
+            None => self.resolve(id),
+        }
+    }
+
     /// Names of the serialized files in a bundle, read from its header only.
     fn cabs_of(path: &Path) -> Result<Vec<String>> {
         let file = File::open(path)?;
+        // SAFETY: as in `Bundle::open`: sound while the file is not cut short under the map.
         let map = unsafe { Mmap::map(&file)? };
         let reader = unity_bundle::Bundle::new(map)?;
         Ok(reader
@@ -259,5 +278,47 @@ impl Install {
             .get(&key)
             .cloned()
             .unwrap_or_else(|| format!("(shader {} in {cab})", ptr.m_PathID))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::ffi::OsString;
+
+    #[test]
+    fn home_comes_from_userprofile_where_home_is_not_set() {
+        let env = |pairs: &'static [(&'static str, &'static str)]| {
+            move |name: &str| {
+                pairs
+                    .iter()
+                    .find(|(k, _)| *k == name)
+                    .map(|(_, v)| OsString::from(v))
+            }
+        };
+        let default = Path::new(DEFAULT_GAME_DIR);
+        // Unix shells, and Windows shells that set HOME (Git Bash): unchanged
+        assert_eq!(
+            expand_home_with(default, env(&[("HOME", "/home/me")])),
+            Path::new("/home/me").join("Games/smt3hd")
+        );
+        assert_eq!(
+            expand_home_with(
+                default,
+                env(&[("HOME", "/home/me"), ("USERPROFILE", "/other")])
+            ),
+            Path::new("/home/me").join("Games/smt3hd")
+        );
+        // PowerShell and cmd set only USERPROFILE
+        assert_eq!(
+            expand_home_with(default, env(&[("USERPROFILE", "/users/me")])),
+            Path::new("/users/me").join("Games/smt3hd")
+        );
+        // Neither: the path is left as written, and so is one that does not start with ~
+        assert_eq!(expand_home_with(default, env(&[])), default);
+        assert_eq!(
+            expand_home_with(Path::new("/games/~/x"), env(&[("HOME", "/home/me")])),
+            Path::new("/games/~/x")
+        );
     }
 }

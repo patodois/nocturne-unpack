@@ -83,7 +83,7 @@ enum Command {
         #[arg(long)]
         only: Option<String>,
         /// `demons`, `fields` or `all`
-        #[arg(long, default_value = "all")]
+        #[arg(long, default_value = "all", value_parser = ["demons", "fields", "all"])]
         kind: String,
         /// Decode textures and build the materials with them (much slower, and the largest
         /// fields need more than 1 GB)
@@ -314,17 +314,7 @@ fn main() -> Result<()> {
         } => check_bridge(&game, only.as_deref(), &kind, textures)?,
         #[cfg(feature = "bridge")]
         Command::CheckConformance { args } => {
-            // `--game` before the command is the global one; the checker's own options come after
-            let (mut game, mut textures) = (game, true);
-            let mut rest = Vec::new();
-            let mut it = args.into_iter();
-            while let Some(a) = it.next() {
-                match a.as_str() {
-                    "--game" => game = PathBuf::from(it.next().context("--game needs a folder")?),
-                    "--no-textures" => textures = false,
-                    _ => rest.push(a),
-                }
-            }
+            let (game, textures, rest) = conformance_args(game, args)?;
             let provider = nocturne_unpack::bridge::Nocturne::open(&game)?.with_textures(textures);
             std::process::exit(rewrite_bridge::conformance::cli::run(&provider, rest));
         }
@@ -359,6 +349,28 @@ fn main() -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// Splits what follows `check-conformance` into this tool's own options and the checker's.
+/// `--game` before the checker's first option is the global one and never gets here; after it,
+/// clap hands everything over as it is, so `--game DIR`, `--game=DIR` and `--no-textures` are
+/// picked out here and the rest goes to the checker.
+#[cfg(feature = "bridge")]
+fn conformance_args(game: PathBuf, args: Vec<String>) -> Result<(PathBuf, bool, Vec<String>)> {
+    let (mut game, mut textures) = (game, true);
+    let mut rest = Vec::new();
+    let mut it = args.into_iter();
+    while let Some(a) = it.next() {
+        match a.as_str() {
+            "--game" => game = PathBuf::from(it.next().context("--game needs a folder")?),
+            "--no-textures" => textures = false,
+            _ => match a.strip_prefix("--game=") {
+                Some(dir) => game = PathBuf::from(dir),
+                None => rest.push(a),
+            },
+        }
+    }
+    Ok((game, textures, rest))
 }
 
 fn census(game: &std::path::Path, only: Option<&str>, decode: bool) -> Result<()> {
@@ -1070,6 +1082,55 @@ mod tests {
         ] {
             assert_eq!(game_of(args), want, "{args:?}");
         }
+    }
+
+    #[cfg(feature = "bridge")]
+    #[test]
+    fn check_conformance_takes_game_in_both_spellings_wherever_it_stands() {
+        for args in [
+            &["check-conformance", "--game", "/g", "--kind", "level"][..],
+            &["check-conformance", "--kind", "level", "--game", "/g"][..],
+            &["check-conformance", "--game=/g", "--kind", "level"][..],
+            &["check-conformance", "--kind", "level", "--game=/g"][..],
+            &[
+                "check-conformance",
+                "--kind",
+                "level",
+                "--no-textures",
+                "--game=/g",
+            ][..],
+        ] {
+            let cli = Cli::try_parse_from([&["nocturne-unpack"][..], args].concat()).unwrap();
+            let Command::CheckConformance { args: rest } = cli.command else {
+                panic!("{args:?}")
+            };
+            let (game, textures, rest) = conformance_args(cli.game, rest).unwrap();
+            assert_eq!(game, PathBuf::from("/g"), "{args:?}");
+            assert_eq!(rest, ["--kind", "level"], "{args:?}");
+            assert_eq!(textures, !args.contains(&"--no-textures"), "{args:?}");
+        }
+        // `--game` as the last word has no folder
+        let e = conformance_args(PathBuf::from("/d"), vec!["--game".into()]).unwrap_err();
+        assert!(e.to_string().contains("--game needs a folder"), "{e}");
+    }
+
+    #[cfg(feature = "bridge")]
+    #[test]
+    fn check_bridge_refuses_a_kind_it_does_not_know() {
+        for kind in ["demons", "fields", "all"] {
+            assert!(
+                Cli::try_parse_from(["nocturne-unpack", "check-bridge", "--kind", kind]).is_ok(),
+                "{kind}"
+            );
+        }
+        assert!(Cli::try_parse_from(["nocturne-unpack", "check-bridge"]).is_ok());
+        // `--kind demon` used to run everything, as if no kind had been given
+        let Err(e) = Cli::try_parse_from(["nocturne-unpack", "check-bridge", "--kind", "demon"])
+        else {
+            panic!("--kind demon was accepted")
+        };
+        let text = e.to_string();
+        assert!(text.contains("demon") && text.contains("demons"), "{text}");
     }
 
     #[cfg(feature = "bridge")]

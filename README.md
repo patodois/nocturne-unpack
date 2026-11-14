@@ -82,7 +82,8 @@ To build it yourself instead, see [Build](#build).
 
   Point the tool at it with `--game <folder>` on a command, or once for the whole shell with
   `export NOCTURNE_GAME_DIR=<folder>`; `--game` wins over the variable, which wins over the default. A leading `~/`
-  is expanded. `--game` also accepts the `smt3hd_Data/StreamingAssets/PC` folder itself.
+  is expanded to your home folder (`HOME`, or `USERPROFILE` in a Windows shell that does not set `HOME`). `--game` also
+  accepts the `smt3hd_Data/StreamingAssets/PC` folder itself.
 - **Rust**, the stable toolchain from [rustup.rs](https://rustup.rs) (edition 2021; 1.88 or newer, which is what
   [bcn-decode](https://crates.io/crates/bcn-decode) asks for; tested with 1.88.0 and 1.99). Every dependency comes from
   crates.io, [unity-bundle](#container-layer) and (with the `bridge` feature)
@@ -315,7 +316,9 @@ With the `bridge` feature, `src/bridge.rs` implements [rewrite-bridge](https://g
 `Provider` (rewrite-bridge `0.4`, from [crates.io](https://crates.io/crates/rewrite-bridge)), like wf-unpack's.
 
 - `list` returns every demon (id is the bundle name, `dvl0x01`, kind Character) and every field prefab that has
-  something to draw (`f012/f012_002`, kind Level); prefabs of only transforms are left out.
+  something to draw (`f012/f012_002`, kind Level); prefabs of only transforms are left out. An id is looked up in the
+  game folder first (the base game, then the DLC folders); a file of the working folder with the same name does not
+  replace the game's bundle.
 - `load_animated` returns a validated demon with its clips as `Animation`s and `Channel`s on the model's nodes; `load`
   is the same model. For a field prefab, `load` gives its static model. Only `load_animated` converts the clips;
   `load` and `load_scene` do not read them.
