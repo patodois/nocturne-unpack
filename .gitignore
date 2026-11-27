@@ -6,3 +6,6 @@ target/
 *.png
 /dvl0x*
 /f[0-9]*
+
+# the README title image is ours and is tracked
+!docs/title.png
