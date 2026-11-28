@@ -1,5 +1,7 @@
 <h1 align="center"><img src="docs/title.png" alt="nocturne-unpack" width="521"></h1>
 
+<p align="center"><img src="docs/showcase/model.jpg" alt="A model loaded by nocturne-unpack and drawn by the project's own renderer" width="520"><br><sub>A model read from a local copy by nocturne-unpack, drawn by the project's own renderer (not the game).</sub></p>
+
 [![rewrite-bridge on crates.io](https://img.shields.io/crates/v/rewrite-bridge.svg?label=rewrite-bridge)](https://crates.io/crates/rewrite-bridge)
 [![rewrite-bridge docs](https://img.shields.io/docsrs/rewrite-bridge?label=docs.rs)](https://docs.rs/rewrite-bridge)
 

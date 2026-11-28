@@ -1,3 +1,4 @@
 # Exceptions to the public-tree gate. Each one needs a reason after '#'; `blob=` pins the entry to exact files.
 vendor/rabex/resources/lz4.tpk blob=86b3215 max=400000 # history only (removed in a1ad8cc): the vendored rabex crate's type-tree package, third-party MIT OR Apache-2.0, not game data
 docs/title.png blob=39aead5 # our own lettered title image for the README (drawn for this project, no game art)
+docs/showcase/model.jpg max=400000 # README capture of our own renderer, chosen by the maintainer; not a game file

@@ -40,7 +40,7 @@ Its targets are `aarch64-apple-darwin`, `x86_64-apple-darwin`, `x86_64-unknown-l
 - Read the Steam Windows build's files from the user's own copy; the folder holds `smt3hd_Data`.
 - Use unity-bundle for the container/type-tree layer and bcn-decode for compressed textures.
 - Preserve the documented Unity version scope and report unsupported data rather than inventing it.
-- No extracted textures, meshes, dumps, screenshots or game-derived fixtures may be committed.
+- No extracted textures, meshes, dumps, screenshots or game-derived fixtures may be committed (README captures: see Public files).
 - Read `.resS` byte ranges through the container layer rather than expanding every streamed resource.
 - Whole-field/conformance work can approach gigabytes; the README records a 2 GB level-conformance peak.
 - Maintain the distinction between Unity field prefabs and console-era Atlus data that is only listed.
@@ -50,7 +50,9 @@ Its targets are `aarch64-apple-darwin`, `x86_64-apple-darwin`, `x86_64-unknown-l
 
 ## Public files
 
-- Never commit game files, extracted assets, renders, decompiled code or secrets.
+- Never commit game files, extracted assets, renders, decompiled code or secrets. The one exception is
+  `docs/showcase/`: a few JPEG captures of this project's own renderer, chosen by the maintainer for the README.
+  Never a capture of the game itself, never raw assets; do not add to it without the maintainer's decision.
 - The public-tree gate needs Python 3.9+ and Git; run it from the repository root:
   `python3 tools/check_public_tree.py` (checks Git's index, including staged new files).
 - CI checks committed changes with `python3 tools/check_public_tree.py --range BASE..HEAD`.
